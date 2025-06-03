@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WebRTC Audio/Video Stream with STUN</title>
+  <style>
+    textarea { width: 100%; height: 100px; }
+    video { width: 320px; height: 240px; margin: 10px; border: 1px solid #ccc; }
+  </style>
+</head>
+<body>
+  <h2>WebRTC Audio/Video Stream with STUN</h2>
+
+  <textarea id="localDesc" placeholder="Local Description (paste to remote)"></textarea><br>
+  <button onclick="createOffer()">Create Offer</button>
+  <button onclick="createAnswer()">Create Answer</button><br><br>
+
+  <textarea id="remoteDesc" placeholder="Paste Remote Description Here"></textarea><br>
+  <button onclick="setRemote()">Set Remote Description</button>
+
+  <h3>Local Video</h3>
+  <video id="localVideo" autoplay muted playsinline></video>
+
+  <h3>Remote Video</h3>
+  <video id="remoteVideo" autoplay playsinline></video>
+
+  <script>
+    const pc = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+    });
+
+    let localStream;
+
+    pc.ontrack = event => {
+      const remoteVideo = document.getElementById("remoteVideo");
+      if (!remoteVideo.srcObject) {
+        remoteVideo.srcObject = event.streams[0];
+      }
+    };
+
+    pc.onicecandidate = e => {
+      if (e.candidate === null) {
+        document.getElementById("localDesc").value = JSON.stringify(pc.localDescription);
+      }
+    };
+
+    async function getLocalMediaStream() {
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+        document.getElementById("localVideo").srcObject = localStream;
+      } catch (err) {
+        alert("Media access error: " + err);
+      }
+    }
+
+    async function createOffer() {
+      await getLocalMediaStream();
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+    }
+
+    async function createAnswer() {
+      await getLocalMediaStream();
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+    }
+
+    async function setRemote() {
+      const remoteDesc = JSON.parse(document.getElementById('remoteDesc').value);
+      await pc.setRemoteDescription(new RTCSessionDescription(remoteDesc));
+    }
+  </script>
+</body>
+</html>
