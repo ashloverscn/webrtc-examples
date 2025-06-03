@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WebRTC Audio Stream with STUN</title>
+  <style>
+    textarea { width: 100%; height: 100px; }
+  </style>
+</head>
+<body>
+  <h2>WebRTC Audio Stream with STUN</h2>
+
+  <textarea id="localDesc" placeholder="Local Description (paste to remote)"></textarea><br>
+  <button onclick="createOffer()">Create Offer</button>
+  <button onclick="createAnswer()">Create Answer</button><br><br>
+
+  <textarea id="remoteDesc" placeholder="Paste Remote Description Here"></textarea><br>
+  <button onclick="setRemote()">Set Remote Description</button>
+
+  <h3>Remote Audio</h3>
+  <audio id="remoteAudio" autoplay controls></audio>
+
+  <script>
+    const pc = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+    });
+
+    let localStream;
+
+    // When remote track is received
+    pc.ontrack = event => {
+      const remoteAudio = document.getElementById("remoteAudio");
+      remoteAudio.srcObject = event.streams[0];
+    };
+
+    pc.onicecandidate = e => {
+      if (e.candidate === null) {
+        document.getElementById("localDesc").value = JSON.stringify(pc.localDescription);
+      }
+    };
+
+    async function getLocalAudioStream() {
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+      } catch (err) {
+        alert("Microphone access denied or error: " + err);
+      }
+    }
+
+    async function createOffer() {
+      await getLocalAudioStream();
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+    }
+
+    async function createAnswer() {
+      await getLocalAudioStream();
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+    }
+
+    async function setRemote() {
+      const remoteDesc = JSON.parse(document.getElementById('remoteDesc').value);
+      await pc.setRemoteDescription(new RTCSessionDescription(remoteDesc));
+    }
+  </script>
+</body>
+</html>
