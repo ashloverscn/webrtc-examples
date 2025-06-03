@@ -1,0 +1,26 @@
+# HTTP to HTTPS redirect
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name localhost;
+
+    return 301 https://$host$request_uri;
+}
+
+# HTTPS server block using cert.pem and key.pem
+server {
+    listen 443 ssl http2 default_server;
+    listen [::]:443 ssl http2 default_server;
+
+    server_name localhost;
+
+    root /var/www/html;
+    index index.html index.htm;
+
+    ssl_certificate     /etc/nginx/ssl/cert.pem;
+    ssl_certificate_key /etc/nginx/ssl/key.pem;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+}
