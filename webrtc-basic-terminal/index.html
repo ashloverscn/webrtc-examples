@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WebRTC Serial Terminal</title>
+  <style>
+    textarea { width: 100%; height: 100px; }
+    pre { background: #111; color: #0f0; padding: 10px; height: 200px; overflow-y: scroll; }
+  </style>
+</head>
+<body>
+  <h2>WebRTC Serial Terminal</h2>
+
+  <textarea id="localDesc" placeholder="Local Description (paste to remote)"></textarea><br>
+  <button onclick="createOffer()">Create Offer</button>
+  <button onclick="createAnswer()">Create Answer</button><br><br>
+
+  <textarea id="remoteDesc" placeholder="Paste Remote Description Here"></textarea><br>
+  <button onclick="setRemote()">Set Remote Description</button>
+
+  <h3>Terminal Output</h3>
+  <pre id="terminalOutput"></pre>
+
+  <input type="text" id="inputField" placeholder="Type a command..." onkeydown="checkEnter(event)">
+  <button onclick="sendMessage()">Send</button>
+
+  <script>
+    let pc = new RTCPeerConnection();
+    let dc;
+    const terminal = document.getElementById('terminalOutput');
+
+    pc.ondatachannel = event => {
+      dc = event.channel;
+      setupDataChannel();
+    };
+
+    function createOffer() {
+      dc = pc.createDataChannel("serial");
+      setupDataChannel();
+      pc.createOffer().then(offer => {
+        pc.setLocalDescription(offer);
+        document.getElementById('localDesc').value = JSON.stringify(offer);
+      });
+    }
+
+    function createAnswer() {
+      pc.createAnswer().then(answer => {
+        pc.setLocalDescription(answer);
+        document.getElementById('localDesc').value = JSON.stringify(answer);
+      });
+    }
+
+    function setRemote() {
+      const remoteDesc = JSON.parse(document.getElementById('remoteDesc').value);
+      pc.setRemoteDescription(new RTCSessionDescription(remoteDesc));
+    }
+
+    function setupDataChannel() {
+      dc.onmessage = event => {
+        terminal.innerText += "> " + event.data + "\n";
+        terminal.scrollTop = terminal.scrollHeight;
+      };
+      dc.onopen = () => {
+        terminal.innerText += "=== DataChannel Opened ===\n";
+      };
+      dc.onclose = () => {
+        terminal.innerText += "=== DataChannel Closed ===\n";
+      };
+    }
+
+    function sendMessage() {
+      const input = document.getElementById('inputField');
+      if (dc && dc.readyState === "open") {
+        dc.send(input.value);
+        terminal.innerText += "< " + input.value + "\n";
+        input.value = "";
+        terminal.scrollTop = terminal.scrollHeight;
+      }
+    }
+
+    function checkEnter(e) {
+      if (e.key === "Enter") sendMessage();
+    }
+  </script>
+</body>
+</html>
