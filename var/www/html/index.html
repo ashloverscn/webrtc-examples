@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Illusion with Bigger Matrix Rain</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      height: 100%;
+      background: #000;
+      overflow: hidden;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      font-family: monospace, 'Courier New', monospace;
+      user-select: none;
+    }
+
+    .container {
+      display: flex;
+      align-items: center;
+      gap: 120px; /* spacing around illusion */
+    }
+
+    canvas {
+      background: transparent;
+      display: block;
+      width: 240px;
+      height: 480px;
+      border-radius: 10px;
+      filter: drop-shadow(0 0 5px #0f0);
+      user-select: none;
+    }
+
+    .illusion {
+      position: relative;
+      width: 350px;
+      height: 350px;
+      border-radius: 50%;
+      background: radial-gradient(circle, #222 0%, #000 70%);
+      box-shadow: 0 0 30px #08f, inset 0 0 50px #0ff;
+      animation: pulseGlow 6s ease-in-out infinite;
+      overflow: visible;
+      flex-shrink: 0;
+    }
+
+    .illusion::before,
+    .illusion::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      border-radius: 50%;
+      transform: translate(-50%, -50%);
+      box-shadow:
+        0 0 15px #0ff,
+        0 0 40px #08f,
+        inset 0 0 25px #0ff;
+      animation-timing-function: ease-in-out;
+    }
+
+    .illusion::before {
+      width: 280px;
+      height: 280px;
+      border: 6px solid transparent;
+      border-top-color: #0ff;
+      border-bottom-color: #08f;
+      animation: rotateSolid 8s linear infinite reverse;
+    }
+
+    .illusion::after {
+      width: 190px;
+      height: 190px;
+      border: 8px dashed transparent;
+      border-left-color: #0ff;
+      border-right-color: #08f;
+      animation: rotateSolid 10s linear infinite;
+    }
+
+    .inner-circle {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 130px;
+      height: 130px;
+      border-radius: 50%;
+      background: conic-gradient(
+        from 90deg,
+        #0ff 0deg 45deg,
+        #08f 45deg 90deg,
+        #0ff 90deg 135deg,
+        #08f 135deg 180deg,
+        #0ff 180deg 225deg,
+        #08f 225deg 270deg,
+        #0ff 270deg 315deg,
+        #08f 315deg 360deg
+      );
+      transform: translate(-50%, -50%);
+      animation: rotateSolid 6s linear infinite reverse;
+      box-shadow: 0 0 20px #0ff;
+    }
+
+    @keyframes rotateSolid {
+      0% { transform: translate(-50%, -50%) rotate(0deg); }
+      100% { transform: translate(-50%, -50%) rotate(360deg); }
+    }
+
+    @keyframes pulseGlow {
+      0%, 100% {
+        box-shadow: 0 0 30px #08f, inset 0 0 50px #0ff;
+      }
+      50% {
+        box-shadow: 0 0 60px #0ff, inset 0 0 100px #08f;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <canvas id="matrixLeft" width="240" height="480"></canvas>
+
+    <div class="illusion">
+      <div class="inner-circle"></div>
+    </div>
+
+    <canvas id="matrixRight" width="240" height="480"></canvas>
+  </div>
+
+  <script>
+    class MatrixRain {
+      constructor(canvas) {
+        this.canvas = canvas;
+        this.ctx = canvas.getContext('2d');
+        this.width = canvas.width;
+        this.height = canvas.height;
+        this.fontSize = 16;
+        this.columns = Math.floor(this.width / this.fontSize);
+        this.drops = new Array(this.columns).fill(1);
+        this.chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%^&*';
+        this.hearts = ['❤', '💖', '💚', '💙'];
+      }
+
+      draw() {
+        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
+        this.ctx.fillRect(0, 0, this.width, this.height);
+        this.ctx.font = this.fontSize + 'px monospace';
+        this.ctx.textAlign = 'center';
+
+        for (let i = 0; i < this.drops.length; i++) {
+          let x = i * this.fontSize + this.fontSize / 2;
+          let y = this.drops[i] * this.fontSize;
+
+          let isHeart = Math.random() < 0.05;
+          let text = isHeart
+            ? this.hearts[Math.floor(Math.random() * this.hearts.length)]
+            : this.chars.charAt(Math.floor(Math.random() * this.chars.length));
+
+          this.ctx.fillStyle = isHeart
+            ? ['#FF69B4', '#FF1493', '#00FF00', '#00CED1'][Math.floor(Math.random() * 4)]
+            : '#0F0';
+
+          this.ctx.fillText(text, x, y);
+
+          if (y > this.height && Math.random() > 0.975) {
+            this.drops[i] = 0;
+          }
+
+          this.drops[i]++;
+        }
+      }
+
+      start() {
+        this.interval = setInterval(() => this.draw(), 40);
+      }
+
+      stop() {
+        clearInterval(this.interval);
+      }
+    }
+
+    const matrixLeft = new MatrixRain(document.getElementById('matrixLeft'));
+    const matrixRight = new MatrixRain(document.getElementById('matrixRight'));
+
+    matrixLeft.start();
+    matrixRight.start();
+  </script>
+</body>
+</html>
