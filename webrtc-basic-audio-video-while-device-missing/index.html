@@ -1,27 +1,100 @@
+
 <!DOCTYPE html>
 <html>
 <head>
   <title>WebRTC Audio/Video Stream with STUN</title>
   <style>
     textarea { width: 100%; height: 100px; }
-    video { width: 320px; height: 240px; margin: 10px; border: 1px solid #ccc; }
+    
+    .video-container {
+      display: flex;
+      gap: 10px;
+      margin-top: 20px;
+      height: auto;
+      flex-wrap: wrap; /* allow wrapping on narrow screens */
+    }
+    .video-box {
+      flex: 1 1 45%; /* take about 45% width, flexible */
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-width: 200px; /* prevent shrinking too small */
+    }
+    .video-box h3 {
+      margin: 0 0 5px 0;
+      text-align: center;
+      font-size: 1.1em;
+    }
+    video {
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      object-fit: cover;
+      border: 1px solid #ccc;
+      background: black;
+      max-width: 400px; /* max size for big screens */
+    }
+
+    /* Responsive: stack videos vertically on small screens */
+    @media (max-width: 600px) {
+      .video-container {
+        flex-direction: column;
+      }
+      .video-box {
+        flex: 1 1 100%;
+        min-width: 100%;
+      }
+    }
+
+    /* Square toggle button, fixed top-right corner */
+    #toggleInputsBtn {
+      position: fixed;
+      top: 10px;
+      right: 10px;
+      z-index: 1000;
+      width: 32px;
+      height: 32px;
+      font-size: 18px;
+      font-weight: bold;
+      line-height: 32px;
+      text-align: center;
+      cursor: pointer;
+      border: 1px solid #555;
+      background-color: #f0f0f0;
+      border-radius: 4px;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+      user-select: none;
+      transition: background-color 0.3s ease;
+      padding: 0;
+    }
+    #toggleInputsBtn:hover {
+      background-color: #ddd;
+    }
   </style>
 </head>
 <body>
   <h2>WebRTC Audio/Video Stream with STUN</h2>
 
-  <textarea id="localDesc" placeholder="Local Description (paste to remote)"></textarea><br>
-  <button onclick="createOffer()">Create Offer</button>
-  <button onclick="createAnswer()">Create Answer</button><br><br>
+  <button id="toggleInputsBtn" onclick="toggleInputs()">H</button>
 
-  <textarea id="remoteDesc" placeholder="Paste Remote Description Here"></textarea><br>
-  <button onclick="setRemote()">Set Remote Description</button>
+  <div id="inputArea">
+    <textarea id="localDesc" placeholder="Local Description (paste to remote)"></textarea><br>
+    <button onclick="createOffer()">Create Offer</button>
+    <button onclick="createAnswer()">Create Answer</button><br><br>
 
-  <h3>Local Video</h3>
-  <video id="localVideo" autoplay muted playsinline></video>
+    <textarea id="remoteDesc" placeholder="Paste Remote Description Here"></textarea><br>
+    <button onclick="setRemote()">Set Remote Description</button>
+  </div>
 
-  <h3>Remote Video</h3>
-  <video id="remoteVideo" autoplay playsinline></video>
+  <div class="video-container">
+    <div class="video-box">
+      <h3>Local Video</h3>
+      <video id="localVideo" autoplay muted playsinline></video>
+    </div>
+    <div class="video-box">
+      <h3>Remote Video</h3>
+      <video id="remoteVideo" autoplay playsinline></video>
+    </div>
+  </div>
 
   <script>
     const pc = new RTCPeerConnection({
@@ -52,10 +125,9 @@
         console.warn("Media access failed, generating synthetic stream:", err);
         localStream = new MediaStream();
 
-        // Create synthetic video
         const canvas = document.createElement("canvas");
         canvas.width = 320;
-        canvas.height = 240;
+        canvas.height = 320; // square canvas
         const ctx = canvas.getContext("2d");
 
         function drawNoise() {
@@ -76,7 +148,6 @@
         localStream.addTrack(videoTrack);
         pc.addTrack(videoTrack, localStream);
 
-        // Create silent audio
         const audioCtx = new AudioContext();
         const oscillator = audioCtx.createOscillator();
         const dst = oscillator.connect(audioCtx.createMediaStreamDestination());
@@ -104,6 +175,18 @@
     async function setRemote() {
       const remoteDesc = JSON.parse(document.getElementById('remoteDesc').value);
       await pc.setRemoteDescription(new RTCSessionDescription(remoteDesc));
+    }
+
+    function toggleInputs() {
+      const inputArea = document.getElementById('inputArea');
+      const btn = document.getElementById('toggleInputsBtn');
+      if (inputArea.style.display === 'none') {
+        inputArea.style.display = 'block';
+        btn.textContent = 'H';
+      } else {
+        inputArea.style.display = 'none';
+        btn.textContent = 'S';
+      }
     }
   </script>
 </body>
