@@ -9,10 +9,10 @@
       display: flex;
       gap: 10px;
       margin-top: 20px;
-      height: 240px; /* fixed height to keep aspect ratio */
+      height: 240px;
     }
     .video-box {
-      flex: 1; /* each box takes equal width */
+      flex: 1;
       display: flex;
       flex-direction: column;
     }
@@ -24,21 +24,50 @@
     video {
       width: 100%;
       height: 100%;
-      object-fit: cover; /* video fills box, cropping if necessary */
+      object-fit: cover;
       border: 1px solid #ccc;
       background: black;
+    }
+
+    /* Square toggle button, fixed top-right corner */
+    #toggleInputsBtn {
+      position: fixed;
+      top: 10px;
+      right: 10px;
+      z-index: 1000;
+      width: 32px;
+      height: 32px;
+      font-size: 18px;
+      font-weight: bold;
+      line-height: 32px;
+      text-align: center;
+      cursor: pointer;
+      border: 1px solid #555;
+      background-color: #f0f0f0;
+      border-radius: 4px;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+      user-select: none;
+      transition: background-color 0.3s ease;
+      padding: 0;
+    }
+    #toggleInputsBtn:hover {
+      background-color: #ddd;
     }
   </style>
 </head>
 <body>
   <h2>WebRTC Audio/Video Stream with STUN</h2>
 
-  <textarea id="localDesc" placeholder="Local Description (paste to remote)"></textarea><br>
-  <button onclick="createOffer()">Create Offer</button>
-  <button onclick="createAnswer()">Create Answer</button><br><br>
+  <button id="toggleInputsBtn" onclick="toggleInputs()">H</button>
 
-  <textarea id="remoteDesc" placeholder="Paste Remote Description Here"></textarea><br>
-  <button onclick="setRemote()">Set Remote Description</button>
+  <div id="inputArea">
+    <textarea id="localDesc" placeholder="Local Description (paste to remote)"></textarea><br>
+    <button onclick="createOffer()">Create Offer</button>
+    <button onclick="createAnswer()">Create Answer</button><br><br>
+
+    <textarea id="remoteDesc" placeholder="Paste Remote Description Here"></textarea><br>
+    <button onclick="setRemote()">Set Remote Description</button>
+  </div>
 
   <div class="video-container">
     <div class="video-box">
@@ -130,6 +159,18 @@
     async function setRemote() {
       const remoteDesc = JSON.parse(document.getElementById('remoteDesc').value);
       await pc.setRemoteDescription(new RTCSessionDescription(remoteDesc));
+    }
+
+    function toggleInputs() {
+      const inputArea = document.getElementById('inputArea');
+      const btn = document.getElementById('toggleInputsBtn');
+      if (inputArea.style.display === 'none') {
+        inputArea.style.display = 'block';
+        btn.textContent = 'H';
+      } else {
+        inputArea.style.display = 'none';
+        btn.textContent = 'S';
+      }
     }
   </script>
 </body>
