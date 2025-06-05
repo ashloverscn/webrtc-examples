@@ -4,7 +4,30 @@
   <title>WebRTC Audio/Video Stream with STUN</title>
   <style>
     textarea { width: 100%; height: 100px; }
-    video { width: 320px; height: 240px; margin: 10px; border: 1px solid #ccc; }
+    
+    .video-container {
+      display: flex;
+      gap: 10px;
+      margin-top: 20px;
+      height: 240px; /* fixed height to keep aspect ratio */
+    }
+    .video-box {
+      flex: 1; /* each box takes equal width */
+      display: flex;
+      flex-direction: column;
+    }
+    .video-box h3 {
+      margin: 0 0 5px 0;
+      text-align: center;
+      font-size: 1.1em;
+    }
+    video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover; /* video fills box, cropping if necessary */
+      border: 1px solid #ccc;
+      background: black;
+    }
   </style>
 </head>
 <body>
@@ -17,11 +40,16 @@
   <textarea id="remoteDesc" placeholder="Paste Remote Description Here"></textarea><br>
   <button onclick="setRemote()">Set Remote Description</button>
 
-  <h3>Local Video</h3>
-  <video id="localVideo" autoplay muted playsinline></video>
-
-  <h3>Remote Video</h3>
-  <video id="remoteVideo" autoplay playsinline></video>
+  <div class="video-container">
+    <div class="video-box">
+      <h3>Local Video</h3>
+      <video id="localVideo" autoplay muted playsinline></video>
+    </div>
+    <div class="video-box">
+      <h3>Remote Video</h3>
+      <video id="remoteVideo" autoplay playsinline></video>
+    </div>
+  </div>
 
   <script>
     const pc = new RTCPeerConnection({
@@ -52,7 +80,6 @@
         console.warn("Media access failed, generating synthetic stream:", err);
         localStream = new MediaStream();
 
-        // Create synthetic video
         const canvas = document.createElement("canvas");
         canvas.width = 320;
         canvas.height = 240;
@@ -76,7 +103,6 @@
         localStream.addTrack(videoTrack);
         pc.addTrack(videoTrack, localStream);
 
-        // Create silent audio
         const audioCtx = new AudioContext();
         const oscillator = audioCtx.createOscillator();
         const dst = oscillator.connect(audioCtx.createMediaStreamDestination());
