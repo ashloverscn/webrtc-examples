@@ -4,7 +4,13 @@
   <title>WebRTC Audio/Video Stream with STUN</title>
   <style>
     textarea { width: 100%; height: 100px; }
-    video { width: 320px; height: 240px; margin: 10px; border: 1px solid #ccc; }
+    video { width: 320px; height: 240px; border: 1px solid #ccc; }
+    .video-container {
+      display: flex;
+      gap: 20px;
+      margin-top: 20px;
+      flex-wrap: wrap;
+    }
   </style>
 </head>
 <body>
@@ -17,11 +23,17 @@
   <textarea id="remoteDesc" placeholder="Paste Remote Description Here"></textarea><br>
   <button onclick="setRemote()">Set Remote Description</button>
 
-  <h3>Local Video</h3>
-  <video id="localVideo" autoplay muted playsinline></video>
+  <div class="video-container">
+    <div>
+      <h3>Local Video</h3>
+      <video id="localVideo" autoplay muted playsinline></video>
+    </div>
 
-  <h3>Remote Video</h3>
-  <video id="remoteVideo" autoplay playsinline></video>
+    <div>
+      <h3>Remote Video</h3>
+      <video id="remoteVideo" autoplay playsinline></video>
+    </div>
+  </div>
 
   <script>
     const pc = new RTCPeerConnection({
