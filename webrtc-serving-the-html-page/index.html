@@ -1,23 +1,22 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>WebRTC Audio/Video Stream with STUN</title>
+  <title>WebRTC Audio/Video + Serial Chat</title>
   <style>
     textarea { width: 100%; height: 100px; }
-    
+
     .video-container {
       display: flex;
       gap: 10px;
       margin-top: 20px;
-      height: auto;
-      flex-wrap: wrap; /* allow wrapping on narrow screens */
+      flex-wrap: wrap;
     }
     .video-box {
-      flex: 1 1 45%; /* take about 45% width, flexible */
+      flex: 1 1 45%;
       display: flex;
       flex-direction: column;
       align-items: center;
-      min-width: 200px; /* prevent shrinking too small */
+      min-width: 200px;
     }
     .video-box h3 {
       margin: 0 0 5px 0;
@@ -30,21 +29,9 @@
       object-fit: cover;
       border: 1px solid #ccc;
       background: black;
-      max-width: 400px; /* max size for big screens */
+      max-width: 400px;
     }
 
-    /* Responsive: stack videos vertically on small screens */
-    @media (max-width: 600px) {
-      .video-container {
-        flex-direction: column;
-      }
-      .video-box {
-        flex: 1 1 100%;
-        min-width: 100%;
-      }
-    }
-
-    /* Square toggle button, fixed top-right corner */
     #toggleInputsBtn {
       position: fixed;
       top: 10px;
@@ -68,10 +55,23 @@
     #toggleInputsBtn:hover {
       background-color: #ddd;
     }
+
+    pre {
+      background: #111;
+      color: #0f0;
+      padding: 10px;
+      height: 200px;
+      overflow-y: auto;
+      font-family: monospace;
+    }
+    #inputField {
+      width: calc(100% - 80px);
+      margin-top: 5px;
+    }
   </style>
 </head>
 <body>
-  <h2>WebRTC Audio/Video Stream with STUN</h2>
+  <h2>WebRTC Audio/Video Stream with Serial Terminal</h2>
 
   <button id="toggleInputsBtn" onclick="toggleInputs()">H</button>
 
@@ -95,12 +95,19 @@
     </div>
   </div>
 
+  <h3>Terminal Output</h3>
+  <pre id="terminalOutput"></pre>
+  <input type="text" id="inputField" placeholder="Type a command..." onkeydown="checkEnter(event)">
+  <button onclick="sendMessage()">Send</button>
+
   <script>
     const pc = new RTCPeerConnection({
       iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
     });
 
     let localStream;
+    let dc;
+    const terminal = document.getElementById('terminalOutput');
 
     pc.ontrack = event => {
       const remoteVideo = document.getElementById("remoteVideo");
@@ -111,9 +118,27 @@
 
     pc.onicecandidate = e => {
       if (e.candidate === null) {
-        document.getElementById("localDesc").value = JSON.stringify(pc.localDescription);
+        document.getElementById('localDesc').value = JSON.stringify(pc.localDescription);
       }
     };
+
+    pc.ondatachannel = event => {
+      dc = event.channel;
+      setupDataChannel();
+    };
+
+    function setupDataChannel() {
+      dc.onmessage = event => {
+        terminal.innerText += "> " + event.data + "\n";
+        terminal.scrollTop = terminal.scrollHeight;
+      };
+      dc.onopen = () => {
+        terminal.innerText += "=== DataChannel Opened ===\n";
+      };
+      dc.onclose = () => {
+        terminal.innerText += "=== DataChannel Closed ===\n";
+      };
+    }
 
     async function getLocalMediaStream() {
       try {
@@ -126,7 +151,7 @@
 
         const canvas = document.createElement("canvas");
         canvas.width = 320;
-        canvas.height = 320; // square canvas
+        canvas.height = 320;
         const ctx = canvas.getContext("2d");
 
         function drawNoise() {
@@ -161,6 +186,8 @@
 
     async function createOffer() {
       await getLocalMediaStream();
+      dc = pc.createDataChannel("terminal");
+      setupDataChannel();
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
     }
@@ -174,6 +201,20 @@
     async function setRemote() {
       const remoteDesc = JSON.parse(document.getElementById('remoteDesc').value);
       await pc.setRemoteDescription(new RTCSessionDescription(remoteDesc));
+    }
+
+    function sendMessage() {
+      const input = document.getElementById('inputField');
+      if (dc && dc.readyState === "open") {
+        dc.send(input.value);
+        terminal.innerText += "< " + input.value + "\n";
+        input.value = "";
+        terminal.scrollTop = terminal.scrollHeight;
+      }
+    }
+
+    function checkEnter(e) {
+      if (e.key === "Enter") sendMessage();
     }
 
     function toggleInputs() {
