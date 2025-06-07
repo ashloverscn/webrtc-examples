@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>PiCamera.js MQTT Stream</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px;
+      background: #121212;
+      color: white;
+    }
+    video {
+      width: 100%;
+      max-width: 720px;
+      border: 2px solid #444;
+      background: black;
+    }
+  </style>
+</head>
+<body>
+  <h2>PiCamera.js Live Stream</h2>
+  <video id="videoElement" controls autoplay playsinline>
+    Your browser doesn't support HTML5 video.
+  </video>
+
+  <script type="module">
+    import { PiCamera } from 'https://cdn.jsdelivr.net/npm/picamera.js@latest/dist/picamera.esm.js';
+
+    const videoRef = document.getElementById('videoElement');
+
+    const conn = new PiCamera({
+      deviceUid: '4a40be90-f177-4323-8712-05c11d67b0b1',
+      mqttHost: 'e5122a5328ea4986a0295fa6e037655a.s2.eu.hivemq.cloud',
+      mqttPath: '/mqtt',
+      mqttPort: 8884,
+      mqttUsername: 'admin',
+      mqttPassword: 'admin1234S',
+      stunUrls: [
+        "stun:stun1.l.google.com:19302",
+        "stun:stun2.l.google.com:19302"
+      ]
+    });
+
+    conn.onStream = (stream) => {
+      console.log('[+] Stream received from camera');
+      videoRef.srcObject = stream;
+    };
+
+    conn.connect();
+  </script>
+</body>
+</html>
+
