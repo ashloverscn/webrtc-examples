@@ -1,0 +1,8 @@
+## JavaScript client for pi-webrtc — stream low-latency video/audio from Raspberry Pi using native WebRTC with hardware H.264 (V4L2) or OpenH264
+
+https://www.npmjs.com/package/picamera.js
+
+## Source of the js file
+
+https://cdn.jsdelivr.net/npm/picamera.js@latest/dist/picamera.esm.js
+

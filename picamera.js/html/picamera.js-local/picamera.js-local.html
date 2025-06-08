@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta content="text/html; charset=utf-8" http-equiv="Content-Type">
+  <title>picamera.js demo</title>
+</head>
+
+<body>
+  <div>
+    <div>
+      <video id="videoElement" controls autoplay playsinline>
+        Your browser doesn't support HTML5 video.
+      </video>
+    </div>
+    <div>
+      <label>Device UID: <input type="text" id="deviceUid" placeholder="Device UID" value="4a40be90-f177-4323-8712-05c11d67b0b1"></label><br>
+      <label>MQTT Host: <input type="text" id="mqttHost" placeholder="MQTT Host" 
+value="e5122a5328ea4986a0295fa6e037655a.s2.eu.hivemq.cloud"></label><br>
+      <label>MQTT Path: <input type="text" id="mqttPath" placeholder="MQTT Path" value="/mqtt"></label><br>
+      <label>MQTT Port: <input type="number" id="mqttPort" placeholder="MQTT Port" value="8884"></label><br>
+      <label>MQTT Username: <input type="text" id="mqttUsername" placeholder="MQTT Username" value="admin"></label><br>
+      <label>MQTT Password: <input type="password" id="mqttPassword" placeholder="MQTT Password" value="admin1234S"></label><br>
+    </div>
+    <div>
+      <button onclick="start()">Start</button>
+      <button onclick="stop()">Stop</button>
+    </div>
+
+    <hr>
+
+    <div>
+      <video id="sfuVideoElement" controls autoplay playsinline>
+        Your browser doesn't support HTML5 video.
+      </video>
+    </div>
+    <div>
+      <label>SFU url: <input type="text" id="websocketUrl" placeholder="SFU Websocket URL" value="wss://free1-api.picamera.live"></label><br>
+      <label>API key: <input type="text" id="apiKey" placeholder="API Key" value="APIz3LVTsM2bmNi"></label><br>
+      <label>Room: <input type="text" id="roomId" placeholder="Room Id" value="the-room-name"></label><br>
+    </div>
+    <div>
+      <button onclick="join()">Join</button>
+      <button onclick="leave()">Leave</button>
+    </div>
+  </div>
+
+  <script type="module">
+    import { PiCamera } from './js/picamera.esm.js';
+
+    let videoRef = document.getElementById('videoElement');
+    let conn = null;
+
+    window.start = function start() {
+      const deviceUid = document.getElementById('deviceUid').value;
+      const mqttHost = document.getElementById('mqttHost').value;
+      const mqttPath = document.getElementById('mqttPath').value;
+      const mqttPort = parseInt(document.getElementById('mqttPort').value);
+      const mqttUsername = document.getElementById('mqttUsername').value;
+      const mqttPassword = document.getElementById('mqttPassword').value;
+
+      conn = new PiCamera({
+        deviceUid: deviceUid,
+        mqttHost: mqttHost,
+        mqttPath: mqttPath,
+        mqttPort: mqttPort,
+        mqttUsername: mqttUsername,
+        mqttPassword: mqttPassword,
+        stunUrls: ["stun:stun1.l.google.com:19302", "stun:stun2.l.google.com:19302"],
+      });
+      conn.onStream = (stream) => {
+        videoRef.srcObject = stream;
+      };
+      conn.connect();
+    };
+
+    window.stop = function stop() {
+      if (conn) {
+        conn.terminate();
+      }
+    };
+
+    // ========
+    // SFU demo 
+    // ========
+    let sfuVideoRef = document.getElementById('sfuVideoElement');
+    let sfuConn = null;
+
+    window.join = function join() {
+      const websocketUrl = document.getElementById('websocketUrl').value;
+      const apiKey = document.getElementById('apiKey').value;
+      const roomId = document.getElementById('roomId').value;
+
+      sfuConn = new PiCamera({
+        signaling: 'websocket',
+        websocketUrl: websocketUrl,
+        apiKey: apiKey,
+        roomId: roomId
+      });
+      sfuConn.onSfuStream = (sid, stream) => {
+        sfuVideoRef.srcObject = stream;
+      };
+      sfuConn.connect();
+    };
+
+    window.leave = function leave() {
+      if (sfuConn) {
+        sfuConn.terminate();
+      }
+    };
+  </script>
+</body>
+
+</html>
+
