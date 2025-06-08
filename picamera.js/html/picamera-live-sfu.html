@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>PiCamera.js SFU Stream</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px;
+      background: #121212;
+      color: white;
+    }
+    video {
+      width: 100%;
+      max-width: 720px;
+      border: 2px solid #444;
+      background: black;
+    }
+  </style>
+</head>
+<body>
+  <h2>PiCamera.js Live Stream</h2>
+  <video id="videoElement" controls autoplay playsinline muted>
+    Your browser doesn't support HTML5 video.
+  </video>
+
+  <script type="module">
+    import { PiCamera } from 'https://cdn.jsdelivr.net/npm/picamera.js@latest/dist/picamera.esm.js';
+
+    const videoRef = document.getElementById('videoElement');
+
+    const conn = new PiCamera({
+      signaling: 'websocket',
+      websocketUrl: 'wss://free1-api.picamera.live',
+      apiKey: 'APIz3LVTsM2bmNi',
+      roomId: 'the-room-name'
+    });
+
+    conn.onSfuStream = (sid, stream) => {
+      console.log('[+] Stream received from SFU');
+      videoRef.srcObject = stream;
+      videoRef.play();
+    };
+
+    conn.connect();
+  </script>
+</body>
+</html>
