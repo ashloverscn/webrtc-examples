@@ -140,10 +140,14 @@
         const li = document.createElement('li');
         if (pid === peerId) {
           li.innerHTML = `<span style="color:grey;">[me]:</span>${pid}`;
+          li.style.userSelect = 'none';  // prevent text selection
+          li.style.cursor = 'default';   // normal arrow cursor
+          // no click event for self ID
         } else {
           li.textContent = pid;
+          li.style.cursor = 'pointer';   // pointer cursor for others
+          li.onclick = () => (document.getElementById('targetPeer').value = pid);
         }
-        li.onclick = () => (document.getElementById('targetPeer').value = pid);
         ul.appendChild(li);
       });
     }
