@@ -1,9 +1,9 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="UTF-8" />
   <title>WebRTC Signaling via HiveMQ MQTT</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
   <style>
@@ -33,7 +33,9 @@
       flex-wrap: wrap;
       gap: 8px;
     }
-    select, input, button {
+    select,
+    input,
+    button {
       padding: 8px;
       font-size: 14px;
     }
@@ -64,18 +66,37 @@
       border: 1px solid #333;
       border-radius: 5px;
     }
+    #peerList ul {
+      list-style: none;
+      padding-left: 0;
+      margin: 0;
+    }
+    #peerList li {
+      cursor: pointer;
+      margin: 3px 0;
+    }
+    #peerList li span.me-label {
+      color: grey;
+      margin-right: 4px;
+      font-style: normal;
+      font-weight: normal;
+    }
     @media (max-width: 600px) {
-      #controls { flex-direction: column; }
+      #controls {
+        flex-direction: column;
+      }
     }
   </style>
 </head>
 <body>
-  <h2>MQTT WebRTC Terminal <button id="themeToggle">Toggle Theme</button></h2>
-  <div id="terminal">[🟢] Terminal initialized.<br></div>
+  <h2>
+    MQTT WebRTC Terminal <button id="themeToggle">Toggle Theme</button>
+  </h2>
+  <div id="terminal">[🟢] Terminal initialized.<br /></div>
 
   <div id="controls">
     <select id="signalType">
-      <option value="offer">📤 Offer</option>
+      <!-- Removed the offer option here -->
       <option value="answer">📥 Answer</option>
       <option value="ice">❄️ ICE Candidate</option>
     </select>
@@ -85,11 +106,14 @@
     <button onclick="sendFile()">Send File</button>
     <button onclick="takeSnapshot()">📸 Snapshot</button>
     <button onclick="generateQR()">🔗 QR Peer</button>
-    <input type="file" id="fileInput" style="display:none" />
+    <input type="file" id="fileInput" style="display: none" />
   </div>
 
   <div id="dropZone">📂 Drag and drop files here to send</div>
-  <div id="peerList"><strong>Active Peers:</strong><ul id="peers"></ul></div>
+  <div id="peerList">
+    <strong>Active Peers:</strong>
+    <ul id="peers"></ul>
+  </div>
   <div id="qrcode"></div>
 
   <h3>Media Preview</h3>
@@ -98,7 +122,8 @@
 
   <script>
     const terminal = document.getElementById('terminal');
-    const brokerURL = 'wss://e5122a5328ea4986a0295fa6e037655a.s2.eu.hivemq.cloud:8884/mqtt';
+    const brokerURL =
+      'wss://e5122a5328ea4986a0295fa6e037655a.s2.eu.hivemq.cloud:8884/mqtt';
     const topic = 'webrtc/signaling';
     const peerId = 'peer_' + Math.random().toString(36).substr(2, 6);
     let targetPeerId = '';
@@ -114,10 +139,19 @@
     function updatePeerList() {
       const ul = document.getElementById('peers');
       ul.innerHTML = '';
-      Array.from(peerRegistry).forEach(pid => {
+      Array.from(peerRegistry).forEach((pid) => {
         const li = document.createElement('li');
-        li.textContent = pid;
-        li.onclick = () => document.getElementById('targetPeer').value = pid;
+        if (pid === peerId) {
+          // Add (me):peer_xxxxxx with grey [me]
+          const meSpan = document.createElement('span');
+          meSpan.className = 'me-label';
+          meSpan.textContent = '[me]';
+          li.appendChild(meSpan);
+          li.appendChild(document.createTextNode(`(me):${pid}`));
+        } else {
+          li.textContent = pid;
+          li.onclick = () => (document.getElementById('targetPeer').value = pid);
+        }
         ul.appendChild(li);
       });
     }
@@ -127,7 +161,7 @@
         type,
         from: peerId,
         to: targetPeerId,
-        data
+        data,
       };
       client.publish(topic, JSON.stringify(payload));
       log(`📤 Sent ${type.toUpperCase()} to ${targetPeerId}`);
@@ -138,7 +172,7 @@
       clientId: 'signaling_' + peerId,
       username: 'admin',
       password: 'admin1234S',
-      protocol: 'wss'
+      protocol: 'wss',
     });
 
     client.on('connect', () => {
@@ -160,23 +194,35 @@
       targetPeerId = msg.from;
 
       switch (msg.type) {
-        case 'offer': handleOffer(msg.data); break;
-        case 'answer': handleAnswer(msg.data); break;
-        case 'ice': handleRemoteICE(msg.data); break;
+        case 'offer':
+          handleOffer(msg.data);
+          break;
+        case 'answer':
+          handleAnswer(msg.data);
+          break;
+        case 'ice':
+          handleRemoteICE(msg.data);
+          break;
       }
     });
 
     async function setupMedia(audioOnly = false) {
-      localStream = await navigator.mediaDevices.getUserMedia(audioOnly ? { audio: true } : { video: true, audio: true });
+      localStream = await navigator.mediaDevices.getUserMedia(
+        audioOnly ? { audio: true } : { video: true, audio: true }
+      );
       document.getElementById('localVideo').srcObject = localStream;
     }
 
     function createPeerConnection() {
-      pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
-      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+      pc = new RTCPeerConnection({
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+      });
+      localStream.getTracks().forEach((track) =>
+        pc.addTrack(track, localStream)
+      );
 
-      dc = pc.createDataChannel("chat");
-      dc.onopen = () => log("🗨️ DataChannel open");
+      dc = pc.createDataChannel('chat');
+      dc.onopen = () => log('🗨️ DataChannel open');
       dc.onmessage = (e) => handleDataMessage(e.data);
 
       pc.ondatachannel = (event) => {
@@ -196,7 +242,7 @@
     async function initiateCall() {
       targetPeerId = document.getElementById('targetPeer').value;
       if (!targetPeerId) return log('⚠️ Enter a Target Peer ID');
-      const audioOnly = !confirm("Use camera? Press Cancel for audio-only.");
+      const audioOnly = !confirm('Use camera? Press Cancel for audio-only.');
       await setupMedia(audioOnly);
       createPeerConnection();
       const offer = await pc.createOffer();
@@ -205,7 +251,9 @@
     }
 
     async function handleOffer(offer) {
-      const audioOnly = !confirm("Incoming call with video. Accept with camera? Press Cancel for audio-only.");
+      const audioOnly = !confirm(
+        'Incoming call with video. Accept with camera? Press Cancel for audio-only.'
+      );
       await setupMedia(audioOnly);
       createPeerConnection();
       await pc.setRemoteDescription(new RTCSessionDescription(offer));
@@ -241,16 +289,16 @@
     }
 
     function sendMessage() {
-      if (dc && dc.readyState === "open") {
-        const msg = prompt("Enter message:");
+      if (dc && dc.readyState === 'open') {
+        const msg = prompt('Enter message:');
         if (msg) dc.send(msg);
       } else {
-        log("⚠️ Data channel not open.");
+        log('⚠️ Data channel not open.');
       }
     }
 
     function sendFile() {
-      if (!dc || dc.readyState !== 'open') return log("⚠️ Data channel not open.");
+      if (!dc || dc.readyState !== 'open') return log('⚠️ Data channel not open.');
       document.getElementById('fileInput').click();
     }
 
@@ -279,7 +327,7 @@
       a.click();
     }
 
-    document.getElementById("themeToggle").onclick = () => {
+    document.getElementById('themeToggle').onclick = () => {
       const body = document.body;
       if (body.style.background === 'white') {
         body.style.background = '#121212';
@@ -288,16 +336,23 @@
         body.style.background = 'white';
         body.style.color = 'black';
       }
-    }
+    };
 
     const dropZone = document.getElementById('dropZone');
-    dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.style.borderColor = 'lime'; });
-    dropZone.addEventListener('dragleave', e => { e.preventDefault(); dropZone.style.borderColor = '#888'; });
-    dropZone.addEventListener('drop', e => {
+    dropZone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      dropZone.style.borderColor = 'lime';
+    });
+    dropZone.addEventListener('dragleave', (e) => {
+      e.preventDefault();
+      dropZone.style.borderColor = '#888';
+    });
+    dropZone.addEventListener('drop', (e) => {
       e.preventDefault();
       dropZone.style.borderColor = '#888';
       const file = e.dataTransfer.files[0];
-      if (!file || !dc || dc.readyState !== 'open') return log("⚠️ File not sent.");
+      if (!file || !dc || dc.readyState !== 'open')
+        return log('⚠️ File not sent.');
       const reader = new FileReader();
       reader.onload = function () {
         dc.send(JSON.stringify({ filename: file.name, content: reader.result }));
@@ -309,10 +364,15 @@
     function generateQR() {
       const url = `${location.origin}${location.pathname}?peer=${peerId}`;
       document.getElementById('qrcode').innerHTML = '';
-      QRCode.toCanvas(document.getElementById('qrcode'), url, { width: 200 }, err => {
-        if (err) log("❌ QR generation failed");
-        else log("📷 QR code ready for peer linking");
-      });
+      QRCode.toCanvas(
+        document.getElementById('qrcode'),
+        url,
+        { width: 200 },
+        (err) => {
+          if (err) log('❌ QR generation failed');
+          else log('📷 QR code ready for peer linking');
+        }
+      );
     }
 
     const params = new URLSearchParams(window.location.search);
