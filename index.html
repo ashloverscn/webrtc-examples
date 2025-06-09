@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>WebRTC Signaling via MQTT</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
+  <style>
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #121212;
+      color: #ddd;
+      padding: 20px;
+      margin: 0;
+    }
+    h2 {
+      color: #fff;
+    }
+    #terminal {
+      background: #000;
+      padding: 15px;
+      height: 250px;
+      overflow-y: auto;
+      font-family: monospace;
+      font-size: 14px;
+      border: 1px solid #444;
+      border-radius: 8px;
+    }
+    #controls {
+      margin-top: 20px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    select, input, button {
+      padding: 8px;
+      font-size: 14px;
+    }
+    video {
+      width: 100%;
+      max-width: 300px;
+      border: 2px solid #444;
+      border-radius: 8px;
+      margin: 10px 0;
+    }
+    #themeToggle {
+      float: right;
+    }
+    #dropZone {
+      border: 2px dashed #888;
+      padding: 20px;
+      margin-top: 10px;
+      text-align: center;
+      border-radius: 10px;
+    }
+    #qrcode {
+      margin-top: 20px;
+    }
+    #peerList {
+      margin-top: 15px;
+      padding: 10px;
+      background: #1d1d1d;
+      border: 1px solid #333;
+      border-radius: 5px;
+    }
+    @media (max-width: 600px) {
+      #controls { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <h2>MQTT WebRTC Terminal <button id="themeToggle">Toggle Theme</button></h2>
+  <div id="terminal">[🟢] Terminal initialized.<br></div>
+
+  <div id="controls">
+    <select id="signalType">
+      <option value="offer">📤 Offer</option>
+      <option value="answer">📥 Answer</option>
+      <option value="ice">❄️ ICE Candidate</option>
+    </select>
+    <input type="text" id="targetPeer" placeholder="Target Peer ID" />
+    <button onclick="initiateCall()">Start Call</button>
+    <button onclick="sendMessage()">Send Text</button>
+    <button onclick="sendFile()">Send File</button>
+    <button onclick="takeSnapshot()">📸 Snapshot</button>
+    <button onclick="generateQR()">🔗 QR Peer</button>
+    <input type="file" id="fileInput" style="display:none" />
+  </div>
+
+  <div id="dropZone">📂 Drag and drop files here to send</div>
+  <div id="peerList"><strong>Active Peers:</strong><ul id="peers"></ul></div>
+  <div id="qrcode"></div>
+
+  <h3>Media Preview</h3>
+  <video id="localVideo" autoplay muted playsinline></video>
+  <video id="remoteVideo" autoplay playsinline></video>
+
+  <script>
+    const terminal = document.getElementById('terminal');
+    const brokerURL = 'wss://yourdomain.com:13999';
+    const topic = 'webrtc/signaling';
+    const peerId = 'peer_' + Math.random().toString(36).substr(2, 6);
+    let targetPeerId = '';
+    let pc;
+    let dc;
+    let localStream;
+    let peerRegistry = new Set();
+
+    function log(msg) {
+      const line = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      terminal.innerHTML += line + '<br>';
+      terminal.scrollTop = terminal.scrollHeight;
+    }
+
+    function updatePeerList() {
+      const ul = document.getElementById('peers');
+      ul.innerHTML = '';
+      Array.from(peerRegistry).forEach(pid => {
+        const li = document.createElement('li');
+        li.textContent = pid;
+        li.onclick = () => document.getElementById('targetPeer').value = pid;
+        ul.appendChild(li);
+      });
+    }
+
+    function sendSignal(type, data) {
+      const payload = {
+        type,
+        from: peerId,
+        to: targetPeerId,
+        data
+      };
+      client.publish(topic, JSON.stringify(payload));
+      log(`📤 Sent ${type.toUpperCase()} to ${targetPeerId}`);
+    }
+
+    const client = mqtt.connect(brokerURL, {
+      rejectUnauthorized: false,
+      clientId: 'signaling_' + peerId
+    });
+
+    client.on('connect', () => {
+      log(`✅ Connected as ${peerId}`);
+      client.subscribe(topic);
+      client.publish(topic, JSON.stringify({ type: 'presence', from: peerId }));
+    });
+
+    client.on('message', (t, payload) => {
+      const msg = JSON.parse(payload.toString());
+      if (msg.type === 'presence') {
+        peerRegistry.add(msg.from);
+        updatePeerList();
+        return;
+      }
+      if (msg.to !== peerId) return;
+
+      log(`📥 ${msg.type.toUpperCase()} from ${msg.from}`);
+      targetPeerId = msg.from;
+
+      switch (msg.type) {
+        case 'offer': handleOffer(msg.data); break;
+        case 'answer': handleAnswer(msg.data); break;
+        case 'ice': handleRemoteICE(msg.data); break;
+      }
+    });
+
+    async function setupMedia(audioOnly = false) {
+      localStream = await navigator.mediaDevices.getUserMedia(audioOnly ? { audio: true } : { video: true, audio: true });
+      document.getElementById('localVideo').srcObject = localStream;
+    }
+
+    function createPeerConnection() {
+      pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+      dc = pc.createDataChannel("chat");
+      dc.onopen = () => log("🗨️ DataChannel open");
+      dc.onmessage = (e) => handleDataMessage(e.data);
+
+      pc.ondatachannel = (event) => {
+        dc = event.channel;
+        dc.onmessage = (e) => handleDataMessage(e.data);
+      };
+
+      pc.onicecandidate = (e) => {
+        if (e.candidate) sendSignal('ice', e.candidate);
+      };
+
+      pc.ontrack = (e) => {
+        document.getElementById('remoteVideo').srcObject = e.streams[0];
+      };
+    }
+
+    async function initiateCall() {
+      targetPeerId = document.getElementById('targetPeer').value;
+      if (!targetPeerId) return log('⚠️ Enter a Target Peer ID');
+      const audioOnly = !confirm("Use camera? Press Cancel for audio-only.");
+      await setupMedia(audioOnly);
+      createPeerConnection();
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      sendSignal('offer', offer);
+    }
+
+    async function handleOffer(offer) {
+      const audioOnly = !confirm("Incoming call with video. Accept with camera? Press Cancel for audio-only.");
+      await setupMedia(audioOnly);
+      createPeerConnection();
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      sendSignal('answer', answer);
+    }
+
+    async function handleAnswer(answer) {
+      await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    }
+
+    function handleRemoteICE(candidate) {
+      pc.addIceCandidate(new RTCIceCandidate(candidate));
+    }
+
+    function handleDataMessage(data) {
+      try {
+        const obj = JSON.parse(data);
+        if (obj.filename && obj.content) {
+          const link = document.createElement('a');
+          link.href = obj.content;
+          link.download = obj.filename;
+          link.textContent = `📥 Download ${obj.filename}`;
+          terminal.appendChild(link);
+          terminal.innerHTML += '<br>';
+        } else {
+          log(`📩 ${data}`);
+        }
+      } catch (e) {
+        log(`📩 ${data}`);
+      }
+    }
+
+    function sendMessage() {
+      if (dc && dc.readyState === "open") {
+        const msg = prompt("Enter message:");
+        if (msg) dc.send(msg);
+      } else {
+        log("⚠️ Data channel not open.");
+      }
+    }
+
+    function sendFile() {
+      if (!dc || dc.readyState !== 'open') return log("⚠️ Data channel not open.");
+      document.getElementById('fileInput').click();
+    }
+
+    document.getElementById('fileInput').addEventListener('change', function () {
+      const file = this.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function () {
+        dc.send(JSON.stringify({ filename: file.name, content: reader.result }));
+        log(`📤 Sent file: ${file.name}`);
+      };
+      reader.readAsDataURL(file);
+    });
+
+    function takeSnapshot() {
+      const video = document.getElementById('localVideo');
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0);
+      const url = canvas.toDataURL('image/png');
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'snapshot.png';
+      a.click();
+    }
+
+    document.getElementById("themeToggle").onclick = () => {
+      const body = document.body;
+      if (body.style.background === 'white') {
+        body.style.background = '#121212';
+        body.style.color = '#ddd';
+      } else {
+        body.style.background = 'white';
+        body.style.color = 'black';
+      }
+    }
+
+    // Drag-drop support
+    const dropZone = document.getElementById('dropZone');
+    dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.style.borderColor = 'lime'; });
+    dropZone.addEventListener('dragleave', e => { e.preventDefault(); dropZone.style.borderColor = '#888'; });
+    dropZone.addEventListener('drop', e => {
+      e.preventDefault();
+      dropZone.style.borderColor = '#888';
+      const file = e.dataTransfer.files[0];
+      if (!file || !dc || dc.readyState !== 'open') return log("⚠️ File not sent.");
+      const reader = new FileReader();
+      reader.onload = function () {
+        dc.send(JSON.stringify({ filename: file.name, content: reader.result }));
+        log(`📤 Dragged file sent: ${file.name}`);
+      };
+      reader.readAsDataURL(file);
+    });
+
+    function generateQR() {
+      const url = `${location.origin}${location.pathname}?peer=${peerId}`;
+      document.getElementById('qrcode').innerHTML = '';
+      QRCode.toCanvas(document.getElementById('qrcode'), url, { width: 200 }, err => {
+        if (err) log("❌ QR generation failed");
+        else log("📷 QR code ready for peer linking");
+      });
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('peer')) {
+      document.getElementById('targetPeer').value = params.get('peer');
+      log(`🔗 Target peer preloaded from QR: ${params.get('peer')}`);
+    }
+  </script>
+</body>
+</html>
