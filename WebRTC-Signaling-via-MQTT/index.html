@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>WebRTC Signaling via MQTT</title>
+  <title>WebRTC Signaling via HiveMQ MQTT</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
@@ -98,13 +98,11 @@
 
   <script>
     const terminal = document.getElementById('terminal');
-    const brokerURL = 'wss://yourdomain.com:13999';
+    const brokerURL = 'wss://e5122a5328ea4986a0295fa6e037655a.s2.eu.hivemq.cloud:8884/mqtt';
     const topic = 'webrtc/signaling';
     const peerId = 'peer_' + Math.random().toString(36).substr(2, 6);
     let targetPeerId = '';
-    let pc;
-    let dc;
-    let localStream;
+    let pc, dc, localStream;
     let peerRegistry = new Set();
 
     function log(msg) {
@@ -137,7 +135,10 @@
 
     const client = mqtt.connect(brokerURL, {
       rejectUnauthorized: false,
-      clientId: 'signaling_' + peerId
+      clientId: 'signaling_' + peerId,
+      username: 'admin',
+      password: 'admin1234S',
+      protocol: 'wss'
     });
 
     client.on('connect', () => {
@@ -289,7 +290,6 @@
       }
     }
 
-    // Drag-drop support
     const dropZone = document.getElementById('dropZone');
     dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.style.borderColor = 'lime'; });
     dropZone.addEventListener('dragleave', e => { e.preventDefault(); dropZone.style.borderColor = '#888'; });
