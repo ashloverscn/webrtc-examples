@@ -69,17 +69,13 @@
     #peerList ul {
       list-style: none;
       padding-left: 0;
-      margin: 0;
     }
     #peerList li {
       cursor: pointer;
-      margin: 3px 0;
+      margin-bottom: 6px;
     }
-    #peerList li span.me-label {
-      color: grey;
-      margin-right: 4px;
-      font-style: normal;
-      font-weight: normal;
+    #peerList li:hover {
+      text-decoration: underline;
     }
     @media (max-width: 600px) {
       #controls {
@@ -90,13 +86,14 @@
 </head>
 <body>
   <h2>
-    MQTT WebRTC Terminal <button id="themeToggle">Toggle Theme</button>
+    MQTT WebRTC Terminal
+    <button id="themeToggle">Toggle Theme</button>
   </h2>
   <div id="terminal">[🟢] Terminal initialized.<br /></div>
 
   <div id="controls">
-    <select id="signalType">
-      <!-- Removed the offer option here -->
+    <select id="signalType" style="display:none;">
+      <!-- Offer removed from dropdown as per your previous instruction -->
       <option value="answer">📥 Answer</option>
       <option value="ice">❄️ ICE Candidate</option>
     </select>
@@ -142,16 +139,11 @@
       Array.from(peerRegistry).forEach((pid) => {
         const li = document.createElement('li');
         if (pid === peerId) {
-          // Add (me):peer_xxxxxx with grey [me]
-          const meSpan = document.createElement('span');
-          meSpan.className = 'me-label';
-          meSpan.textContent = '[me]';
-          li.appendChild(meSpan);
-          li.appendChild(document.createTextNode(`(me):${pid}`));
+          li.innerHTML = `<span style="color:grey;">[me]:</span>${pid}`;
         } else {
           li.textContent = pid;
-          li.onclick = () => (document.getElementById('targetPeer').value = pid);
         }
+        li.onclick = () => (document.getElementById('targetPeer').value = pid);
         ul.appendChild(li);
       });
     }
@@ -217,9 +209,7 @@
       pc = new RTCPeerConnection({
         iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
       });
-      localStream.getTracks().forEach((track) =>
-        pc.addTrack(track, localStream)
-      );
+      localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
 
       dc = pc.createDataChannel('chat');
       dc.onopen = () => log('🗨️ DataChannel open');
@@ -298,7 +288,8 @@
     }
 
     function sendFile() {
-      if (!dc || dc.readyState !== 'open') return log('⚠️ Data channel not open.');
+      if (!dc || dc.readyState !== 'open')
+        return log('⚠️ Data channel not open.');
       document.getElementById('fileInput').click();
     }
 
@@ -307,7 +298,9 @@
       if (!file) return;
       const reader = new FileReader();
       reader.onload = function () {
-        dc.send(JSON.stringify({ filename: file.name, content: reader.result }));
+        dc.send(
+          JSON.stringify({ filename: file.name, content: reader.result })
+        );
         log(`📤 Sent file: ${file.name}`);
       };
       reader.readAsDataURL(file);
@@ -355,7 +348,9 @@
         return log('⚠️ File not sent.');
       const reader = new FileReader();
       reader.onload = function () {
-        dc.send(JSON.stringify({ filename: file.name, content: reader.result }));
+        dc.send(
+          JSON.stringify({ filename: file.name, content: reader.result })
+        );
         log(`📤 Dragged file sent: ${file.name}`);
       };
       reader.readAsDataURL(file);
