@@ -22,5 +22,23 @@ server {
 
     location / {
         try_files $uri $uri/ =404;
+        autoindex on;            # Enable directory listing
+        autoindex_exact_size off; # Optional: show sizes in human-readable format
+        autoindex_localtime on;   # Optional: show local time for file timestamps
+        # Optional: add default index files
+        index index.html index.htm;
     }
+
+    # WebSocket proxy at /ws/
+    location /ws/ {
+        proxy_pass http://127.0.0.1:8080/;
+        proxy_http_version 1.1;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "Upgrade";
+
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
 }
