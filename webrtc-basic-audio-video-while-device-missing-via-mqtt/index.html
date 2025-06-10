@@ -1,323 +1,427 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <title>WebRTC Video + MQTT Signaling</title>
-  <style>
-    body { font-family: sans-serif; margin: 20px; }
-    h2 { margin-bottom: 10px; }
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>WebRTC + MQTT Video & Chat</title>
+<!-- Font Awesome for icons -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"/>
+<style>
+  body {
+    margin: 0;
+    font-family: Arial, sans-serif;
+    background-color: #222;
+    color: #eee;
+  }
 
-    /* Peer list styling */
-    #peerList { margin-top: 15px; padding: 10px; background: #222; color: #eee; border-radius: 5px; }
-    #peerList ul { list-style: none; padding-left: 0; margin: 0; }
-    #peerList li { cursor: pointer; margin-bottom: 6px; padding: 4px 8px; border-radius: 4px; }
-    #peerList li:hover { background: #444; }
-    #peerList li.me { color: #888; cursor: default; }
-    #peerList li.offline { color: #555; font-style: italic; }
+  header {
+    padding: 10px;
+    background-color: #111;
+    text-align: center;
+    font-size: 1.2em;
+  }
 
-    /* Video containers */
-    .video-container {
-      display: flex;
-      gap: 10px;
-      margin-top: 20px;
-      flex-wrap: wrap;
-    }
-    .video-box {
-      flex: 1 1 45%;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      min-width: 200px;
-    }
-    .video-box h3 {
-      margin: 0 0 5px 0;
-      text-align: center;
-      font-size: 1.1em;
-    }
-    video {
-      width: 100%;
-      aspect-ratio: 16 / 9;
-      object-fit: cover;
-      border: 1px solid #ccc;
-      background: black;
-    }
+  /* Peer list styles */
+  #peers {
+    max-height: 150px;
+    overflow-y: auto;
+    background-color: #1a1a1a;
+    padding: 10px;
+  }
+  #peers h2 {
+    margin: 0 0 10px 0;
+    font-size: 1em;
+  }
+  #peerList {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+  #peerList li {
+    padding: 5px 8px;
+    margin-bottom: 4px;
+    cursor: pointer;
+    border-radius: 4px;
+    font-size: 0.9em;
+  }
+  #peerList li:hover {
+    background-color: #333;
+  }
+  #peerList li.me {
+    color: #999;
+    cursor: default;
+  }
+  #peerList li.offline {
+    color: #555;
+  }
 
-    /* Remote audio */
-    #remoteAudio {
-      width: 100%;
-      max-width: 600px;
-      margin-top: 20px;
-    }
+  /* Video container styles */
+  .videos {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    padding: 10px;
+    background-color: #222;
+  }
+  .video-box {
+    background-color: #111;
+    border-radius: 8px;
+    margin: 10px;
+    padding: 10px;
+    max-width: 600px;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  .video-box h3 {
+    margin: 0 0 10px 0;
+    font-size: 1em;
+    color: #ccc;
+  }
+  video {
+    width: 100%;
+    height: auto;
+    background-color: black;
+    border-radius: 4px;
+  }
 
-    /* Mute button styling */
-    #muteButton {
-      padding: 10px 20px;
-      background-color: #4CAF50;
-      color: white;
-      border: none;
-      border-radius: 5px;
-      cursor: pointer;
-      font-size: 16px;
-      margin-top: 20px;
-      display: flex;
-      align-items: center;
-    }
-    #muteButton.muted {
-      background-color: #ff4444;
-    }
-    #muteButton i {
-      margin-right: 8px;
-    }
+  /* Chat styles */
+  #chatContainer {
+    max-width: 800px;
+    margin: 20px auto;
+    background-color: #111;
+    border-radius: 8px;
+    padding: 10px;
+  }
+  #chatContainer h3 {
+    margin: 0 0 10px 0;
+    font-size: 1em;
+  }
+  #messages {
+    height: 150px;
+    overflow-y: auto;
+    background-color: #222;
+    padding: 8px;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 0.9em;
+  }
+  #messages p {
+    margin: 4px 0;
+  }
+  #chatInput {
+    display: flex;
+    margin-top: 8px;
+  }
+  #chatInput input {
+    flex: 1;
+    padding: 8px;
+    border: none;
+    border-radius: 4px 0 0 4px;
+    background-color: #222;
+    color: #eee;
+    font-family: monospace;
+    font-size: 0.9em;
+  }
+  #chatInput button {
+    padding: 8px 12px;
+    border: none;
+    background-color: #4CAF50;
+    color: #fff;
+    border-radius: 0 4px 4px 0;
+    cursor: pointer;
+  }
 
-    /* Local video styling (hidden initially, optional) */
-    #localVideo {
-      width: 100%;
-      max-width: 400px;
-      background: #000;
-      border: 1px solid #ccc;
-      margin-top: 20px;
-    }
-  </style>
+  /* Controls */
+  #controls {
+    display: flex;
+    justify-content: center;
+    gap: 15px;
+    margin: 20px 0;
+  }
+  #muteBtn {
+    background-color: #4CAF50;
+    border: none;
+    padding: 10px 15px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 1em;
+    color: #fff;
+    display: flex;
+    align-items: center;
+  }
+  #muteBtn.muted {
+    background-color: #f44336;
+  }
+  #muteBtn i {
+    margin-right: 8px;
+  }
+
+  /* Status message */
+  #status {
+    text-align: center;
+    font-size: 0.9em;
+    margin-top: 10px;
+  }
+</style>
 </head>
 <body>
-  <h2>WebRTC Video + MQTT Signaling</h2>
 
-  <!-- Peer List -->
-  <div id="peerList">
-    <strong>Active Peers:</strong>
-    <ul id="peers"></ul>
+<header>WebRTC + MQTT Video & Chat</header>
+
+<!-- Peer list -->
+<div id="peers">
+  <h2>Active Peers</h2>
+  <ul id="peerList"></ul>
+</div>
+
+<!-- Video Streams -->
+<div class="videos">
+  <div class="video-box">
+    <h3>Local</h3>
+    <video id="localVideo" autoplay muted playsinline></video>
   </div>
-
-  <!-- Videos -->
-  <div class="video-container">
-    <div class="video-box">
-      <h3>Local Video</h3>
-      <video id="localVideo" autoplay muted playsinline></video>
-    </div>
-    <div class="video-box">
-      <h3>Remote Video</h3>
-      <video id="remoteVideo" autoplay playsinline></video>
-    </div>
+  <div class="video-box">
+    <h3>Remote</h3>
+    <video id="remoteVideo" autoplay playsinline></video>
   </div>
+</div>
 
-  <!-- Remote Audio -->
-  <h3>Remote Audio</h3>
-  <audio id="remoteAudio" controls autoplay></audio>
+<!-- Chat -->
+<div id="chatContainer">
+  <h3>Chat</h3>
+  <div id="messages"></div>
+  <div id="chatInput">
+    <input type="text" id="chatMessage" placeholder="Type a message..." />
+    <button id="sendBtn"><i class="fas fa-paper-plane"></i> Send</button>
+  </div>
+</div>
 
-  <!-- Mute Button -->
-  <button id="muteButton">
-    <i class="fas fa-microphone"></i>Mute
-  </button>
+<!-- Controls -->
+<div id="controls">
+  <button id="muteBtn"><i class="fas fa-microphone"></i> Mute</button>
+</div>
 
-  <script src="https://kit.fontawesome.com/a076d05399.js"></script>
-  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
-  <script>
-    // Configuration
-    const brokerURL = 'wss://e5122a5328ea4986a0295fa6e037655a.s2.eu.hivemq.cloud:8884/mqtt'; // your broker
-    const topic = 'webrtc/audio'; // signaling topic
-    const peerId = localStorage.getItem('audio_peer_id') || ('peer_' + Math.random().toString(36).substr(2, 6));
-    localStorage.setItem('audio_peer_id', peerId);
+<!-- Status -->
+<div id="status"></div>
 
-    let targetPeerId = '';
-    const peerRegistry = {};
+<!-- Scripts -->
+<script src="https://cdn.jsdelivr.net/npm/mqtt/dist/mqtt.min.js"></script>
+<script>
+const brokerUrl = 'wss://e5122a5328ea4986a0295fa6e037655a.s2.eu.hivemq.cloud:8884/mqtt'; // your broker
+const topic = 'webrtc/audio';
 
-    let pc = null;
-    let localStream = null;
-    const remoteStreams = {
-      video: new MediaStream(),
-      audio: new MediaStream()
-    };
+const peerId = localStorage.getItem('peer_id') || ('peer_' + Math.random().toString(36).substr(2, 6));
+localStorage.setItem('peer_id', peerId);
+let targetPeerId = '';
+const peersRegistry = {};
 
-    // MQTT setup
-    const client = mqtt.connect(brokerURL, {
-      rejectUnauthorized: false,
-      clientId: 'audio_' + peerId,
-      username: 'admin', // adjust as needed
-      password: 'admin1234S', // adjust as needed
-      protocol: 'wss',
-    });
+let pc = null;
+let localStream = null;
+const remoteStream = new MediaStream();
 
-    function log(msg) { console.log(msg); }
+// MQTT client setup
+const client = mqtt.connect(brokerUrl, {
+  rejectUnauthorized: false,
+  clientId: 'client_' + peerId,
+  username: 'admin', // adjust accordingly
+  password: 'admin1234S', // adjust accordingly
+  protocol: 'wss'
+});
 
-    function updatePeerList() {
-      const now = Date.now();
-      const ul = document.getElementById('peers');
-      ul.innerHTML = '';
-      for (const pid in peerRegistry) {
-        const lastSeen = peerRegistry[pid];
-        const isOffline = now - lastSeen > 1000;
-        const isExpired = now - lastSeen > 5000;
+const statusDiv = document.getElementById('status');
 
-        if (isExpired) {
-          delete peerRegistry[pid];
-          continue;
-        }
+function updateStatus(msg) {
+  statusDiv.innerText = msg;
+  console.log(msg);
+}
 
-        const li = document.createElement('li');
-        if (pid === peerId) {
-          li.className = 'me';
-          li.textContent = `[me]: ${pid}`;
-          li.style.cursor = 'default';
-        } else if (isOffline) {
-          li.className = 'offline';
-          li.textContent = `[disconnected]: ${pid}`;
-        } else {
-          li.textContent = `[online]: ${pid}`;
-          li.onclick = () => {
-            targetPeerId = pid;
-            initiateCall();
-          };
-        }
-        ul.appendChild(li);
-      }
+// Update peer list
+function updatePeerList() {
+  const now = Date.now();
+  const ul = document.getElementById('peerList');
+  ul.innerHTML = '';
+  for (const pid in peersRegistry) {
+    const lastSeen = peersRegistry[pid];
+    const isOffline = now - lastSeen > 1000;
+    const isExpired = now - lastSeen > 5000;
+    if (isExpired) {
+      delete peersRegistry[pid];
+      continue;
     }
-
-    function sendSignal(type, data) {
-      if (!targetPeerId && type !== 'presence') {
-        log('⚠️ Select a peer first.');
-        return;
-      }
-      const payload = { type, from: peerId, to: targetPeerId, data };
-      client.publish(topic, JSON.stringify(payload));
-    }
-
-    // Connect and announce presence
-    client.on('connect', () => {
-      log(`✅ Connected as ${peerId}`);
-      client.subscribe(topic);
-      setInterval(() => {
-        client.publish(topic, JSON.stringify({ type: 'presence', from: peerId }));
-      }, 1000);
-      // Check devices
-      navigator.mediaDevices.enumerateDevices().then(devices => {
-        const hasInput = devices.some(d => d.kind === 'audioinput');
-        const hasOutput = devices.some(d => d.kind === 'audiooutput');
-        if (!hasInput) console.warn("⚠️ No audio input device available.");
-        if (!hasOutput) console.warn("⚠️ No audio output device available.");
-      });
-    });
-
-    // Handle incoming messages
-    client.on('message', (topic, payload) => {
-      const msg = JSON.parse(payload.toString());
-      if (msg.type === 'presence') {
-        peerRegistry[msg.from] = Date.now();
-        updatePeerList();
-        return;
-      }
-      if (msg.to !== peerId) return;
-      targetPeerId = msg.from;
-      console.log(`📥 ${msg.type} from ${msg.from}`);
-
-      switch (msg.type) {
-        case 'offer':
-          handleOffer(msg.data);
-          break;
-        case 'answer':
-          handleAnswer(msg.data);
-          break;
-        case 'ice':
-          handleRemoteICE(msg.data);
-          break;
-      }
-    });
-
-    setInterval(updatePeerList, 1000);
-
-    async function getMedia() {
-      try {
-        // Request both video and audio
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        document.getElementById('localVideo').srcObject = stream;
-        return stream;
-      } catch (err) {
-        console.warn('Could not get user media:', err);
-        // fallback: generate noise
-        const ctx = new (window.AudioContext || window.webkitAudioContext)();
-        const bufferSize = 4096;
-        const noiseSource = ctx.createScriptProcessor(bufferSize, 1, 1);
-        noiseSource.onaudioprocess = e => {
-          const output = e.outputBuffer.getChannelData(0);
-          for (let i = 0; i < bufferSize; i++) {
-            output[i] = Math.random() * 2 - 1;
-          }
-        };
-        const dest = ctx.createMediaStreamDestination();
-        noiseSource.connect(dest);
-        // Optional: connect to speakers
-        // noiseSource.connect(ctx.destination);
-        return dest.stream;
-      }
-    }
-
-    async function setupPeerConnection(isOfferer) {
-      if (pc) { pc.close(); }
-      pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
-
-      pc.onicecandidate = e => {
-        if (e.candidate) sendSignal('ice', e.candidate);
+    const li = document.createElement('li');
+    if (pid === peerId) {
+      li.className = 'me';
+      li.innerText = `[me]: ${pid}`;
+    } else if (isOffline) {
+      li.className = 'offline';
+      li.innerText = `[disconnected]: ${pid}`;
+    } else {
+      li.innerText = `[online]: ${pid}`;
+      li.onclick = () => {
+        targetPeerId = pid;
+        startCall();
       };
-
-      // To gather remote tracks into separate streams
-      pc.ontrack = e => {
-        if (e.track.kind === 'video') {
-          // Add to remote video stream
-          remoteStreams.video.addTrack(e.track);
-          document.getElementById('remoteVideo').srcObject = remoteStreams.video;
-        } else if (e.track.kind === 'audio') {
-          // Add to remote audio stream
-          remoteStreams.audio.addTrack(e.track);
-          document.getElementById('remoteAudio').srcObject = remoteStreams.audio;
-        }
-      };
-
-      // Get local media
-      if (!localStream) {
-        localStream = await getMedia();
-        document.getElementById('localVideo').srcObject = localStream;
-        localStream.getTracks().forEach(track => {
-          pc.addTrack(track, localStream);
-        });
-      }
-
-      if (isOfferer) {
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        sendSignal('offer', offer);
-      }
     }
+    ul.appendChild(li);
+  }
+}
 
-    async function initiateCall() {
-      await setupPeerConnection(true);
+client.on('connect', () => {
+  updateStatus(`Connected as ${peerId}`);
+  client.subscribe(topic);
+  setInterval(() => {
+    client.publish(topic, JSON.stringify({ type: 'presence', from: peerId }));
+  }, 1000);
+  // Check media devices
+  navigator.mediaDevices.enumerateDevices().then(d => {
+    if (!d.some(dev => dev.kind === 'audioinput')) {
+      alert('No microphone detected.');
     }
+  });
+});
 
-    async function handleOffer(offer) {
-      await setupPeerConnection(false);
-      await pc.setRemoteDescription(new RTCSessionDescription(offer));
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      sendSignal('answer', answer);
+client.on('message', (t, payload) => {
+  const msg = JSON.parse(payload.toString());
+  if (msg.type === 'presence') {
+    peersRegistry[msg.from] = Date.now();
+    updatePeerList();
+    return;
+  }
+  if (msg.to && msg.to !== peerId) return;
+  targetPeerId = msg.from;
+  updateStatus(`Received ${msg.type} from ${msg.from}`);
+  switch (msg.type) {
+    case 'offer':
+      handleOffer(msg.data);
+      break;
+    case 'answer':
+      handleAnswer(msg.data);
+      break;
+    case 'ice':
+      handleRemoteIce(msg.data);
+      break;
+    case 'chat':
+      addMessage(`${msg.from}: ${msg.msg}`);
+      break;
+  }
+});
+
+// Get local media
+async function getMedia() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    document.getElementById('localVideo').srcObject = stream;
+    return stream;
+  } catch (err) {
+    alert('Could not access camera/microphone.');
+    console.error(err);
+    return new MediaStream();
+  }
+}
+
+async function startCall() {
+  if (pc) {
+    pc.close();
+  }
+  pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+  pc.onicecandidate = e => {
+    if (e.candidate) sendSignal('ice', e.candidate);
+  };
+  pc.ontrack = e => {
+    if (e.track.kind === 'video') {
+      remoteStream.addTrack(e.track);
+      document.getElementById('remoteVideo').srcObject = remoteStream;
     }
+  };
+  if (!localStream) {
+    localStream = await getMedia();
+  }
+  localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  sendSignal('offer', offer);
+}
 
-    async function handleAnswer(answer) {
-      await pc.setRemoteDescription(new RTCSessionDescription(answer));
+async function handleOffer(offer) {
+  if (pc) pc.close();
+  pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+  pc.onicecandidate = e => {
+    if (e.candidate) sendSignal('ice', e.candidate);
+  };
+  pc.ontrack = e => {
+    if (e.track.kind === 'video') {
+      remoteStream.addTrack(e.track);
+      document.getElementById('remoteVideo').srcObject = remoteStream;
     }
+  };
+  await pc.setRemoteDescription(new RTCSessionDescription(offer));
+  if (!localStream) {
+    localStream = await getMedia();
+  }
+  localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+  const answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
+  sendSignal('answer', answer);
+}
 
-    function handleRemoteICE(candidate) {
-      pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(console.warn);
-    }
+async function handleAnswer(answer) {
+  await pc.setRemoteDescription(new RTCSessionDescription(answer));
+}
 
-    document.getElementById('muteButton').addEventListener('click', () => {
-      const button = document.getElementById('muteButton');
-      isMuted = !isMuted;
-      button.classList.toggle('muted', isMuted);
-      document.querySelector('#muteButton i').classList.toggle('fa-microphone-slash', isMuted);
-      document.querySelector('#muteButton i').classList.toggle('fa-microphone', !isMuted);
-      if (localStream) {
-        localStream.getTracks().forEach(track => {
-          if (track.kind === 'audio') { track.enabled = !isMuted; }
-        });
-      }
+function handleRemoteIce(candidate) {
+  pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(e => console.warn(e));
+}
+
+function sendSignal(type, data) {
+  client.publish(topic, JSON.stringify({ type, from: peerId, to: targetPeerId, data }));
+}
+
+// Mute/unmute
+const muteBtn = document.getElementById('muteBtn');
+let isMuted = false;
+muteBtn.onclick = () => {
+  if (localStream) {
+    localStream.getAudioTracks().forEach(t => {
+      t.enabled = !isMuted;
     });
-  </script>
+  }
+  isMuted = !isMuted;
+  if (isMuted) {
+    muteBtn.classList.add('muted');
+    muteBtn.innerHTML = `<i class="fas fa-microphone-slash"></i> Unmute`;
+  } else {
+    muteBtn.classList.remove('muted');
+    muteBtn.innerHTML = `<i class="fas fa-microphone"></i> Mute`;
+  }
+};
+
+// Chat messaging
+const messagesDiv = document.getElementById('messages');
+const chatInput = document.getElementById('chatMessage');
+const sendBtn = document.getElementById('sendBtn');
+
+sendBtn.onclick = sendMessage;
+chatInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') sendMessage();
+});
+
+function sendMessage() {
+  const msg = chatInput.value.trim();
+  if (msg === '') return;
+  client.publish(topic, JSON.stringify({ type: 'chat', from: peerId, msg }));
+  addMessage(`Me: ${msg}`);
+  chatInput.value = '';
+}
+
+function addMessage(text) {
+  const p = document.createElement('p');
+  p.innerText = text;
+  messagesDiv.appendChild(p);
+  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+</script>
+
 </body>
 </html>
