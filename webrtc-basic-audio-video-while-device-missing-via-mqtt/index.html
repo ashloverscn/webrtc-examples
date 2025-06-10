@@ -1,1 +1,323 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WebRTC Video + MQTT Signaling</title>
+  <style>
+    body { font-family: sans-serif; margin: 20px; }
+    h2 { margin-bottom: 10px; }
 
+    /* Peer list styling */
+    #peerList { margin-top: 15px; padding: 10px; background: #222; color: #eee; border-radius: 5px; }
+    #peerList ul { list-style: none; padding-left: 0; margin: 0; }
+    #peerList li { cursor: pointer; margin-bottom: 6px; padding: 4px 8px; border-radius: 4px; }
+    #peerList li:hover { background: #444; }
+    #peerList li.me { color: #888; cursor: default; }
+    #peerList li.offline { color: #555; font-style: italic; }
+
+    /* Video containers */
+    .video-container {
+      display: flex;
+      gap: 10px;
+      margin-top: 20px;
+      flex-wrap: wrap;
+    }
+    .video-box {
+      flex: 1 1 45%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-width: 200px;
+    }
+    .video-box h3 {
+      margin: 0 0 5px 0;
+      text-align: center;
+      font-size: 1.1em;
+    }
+    video {
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      object-fit: cover;
+      border: 1px solid #ccc;
+      background: black;
+    }
+
+    /* Remote audio */
+    #remoteAudio {
+      width: 100%;
+      max-width: 600px;
+      margin-top: 20px;
+    }
+
+    /* Mute button styling */
+    #muteButton {
+      padding: 10px 20px;
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 16px;
+      margin-top: 20px;
+      display: flex;
+      align-items: center;
+    }
+    #muteButton.muted {
+      background-color: #ff4444;
+    }
+    #muteButton i {
+      margin-right: 8px;
+    }
+
+    /* Local video styling (hidden initially, optional) */
+    #localVideo {
+      width: 100%;
+      max-width: 400px;
+      background: #000;
+      border: 1px solid #ccc;
+      margin-top: 20px;
+    }
+  </style>
+</head>
+<body>
+  <h2>WebRTC Video + MQTT Signaling</h2>
+
+  <!-- Peer List -->
+  <div id="peerList">
+    <strong>Active Peers:</strong>
+    <ul id="peers"></ul>
+  </div>
+
+  <!-- Videos -->
+  <div class="video-container">
+    <div class="video-box">
+      <h3>Local Video</h3>
+      <video id="localVideo" autoplay muted playsinline></video>
+    </div>
+    <div class="video-box">
+      <h3>Remote Video</h3>
+      <video id="remoteVideo" autoplay playsinline></video>
+    </div>
+  </div>
+
+  <!-- Remote Audio -->
+  <h3>Remote Audio</h3>
+  <audio id="remoteAudio" controls autoplay></audio>
+
+  <!-- Mute Button -->
+  <button id="muteButton">
+    <i class="fas fa-microphone"></i>Mute
+  </button>
+
+  <script src="https://kit.fontawesome.com/a076d05399.js"></script>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script>
+    // Configuration
+    const brokerURL = 'wss://e5122a5328ea4986a0295fa6e037655a.s2.eu.hivemq.cloud:8884/mqtt'; // your broker
+    const topic = 'webrtc/audio'; // signaling topic
+    const peerId = localStorage.getItem('audio_peer_id') || ('peer_' + Math.random().toString(36).substr(2, 6));
+    localStorage.setItem('audio_peer_id', peerId);
+
+    let targetPeerId = '';
+    const peerRegistry = {};
+
+    let pc = null;
+    let localStream = null;
+    const remoteStreams = {
+      video: new MediaStream(),
+      audio: new MediaStream()
+    };
+
+    // MQTT setup
+    const client = mqtt.connect(brokerURL, {
+      rejectUnauthorized: false,
+      clientId: 'audio_' + peerId,
+      username: 'admin', // adjust as needed
+      password: 'admin1234S', // adjust as needed
+      protocol: 'wss',
+    });
+
+    function log(msg) { console.log(msg); }
+
+    function updatePeerList() {
+      const now = Date.now();
+      const ul = document.getElementById('peers');
+      ul.innerHTML = '';
+      for (const pid in peerRegistry) {
+        const lastSeen = peerRegistry[pid];
+        const isOffline = now - lastSeen > 1000;
+        const isExpired = now - lastSeen > 5000;
+
+        if (isExpired) {
+          delete peerRegistry[pid];
+          continue;
+        }
+
+        const li = document.createElement('li');
+        if (pid === peerId) {
+          li.className = 'me';
+          li.textContent = `[me]: ${pid}`;
+          li.style.cursor = 'default';
+        } else if (isOffline) {
+          li.className = 'offline';
+          li.textContent = `[disconnected]: ${pid}`;
+        } else {
+          li.textContent = `[online]: ${pid}`;
+          li.onclick = () => {
+            targetPeerId = pid;
+            initiateCall();
+          };
+        }
+        ul.appendChild(li);
+      }
+    }
+
+    function sendSignal(type, data) {
+      if (!targetPeerId && type !== 'presence') {
+        log('⚠️ Select a peer first.');
+        return;
+      }
+      const payload = { type, from: peerId, to: targetPeerId, data };
+      client.publish(topic, JSON.stringify(payload));
+    }
+
+    // Connect and announce presence
+    client.on('connect', () => {
+      log(`✅ Connected as ${peerId}`);
+      client.subscribe(topic);
+      setInterval(() => {
+        client.publish(topic, JSON.stringify({ type: 'presence', from: peerId }));
+      }, 1000);
+      // Check devices
+      navigator.mediaDevices.enumerateDevices().then(devices => {
+        const hasInput = devices.some(d => d.kind === 'audioinput');
+        const hasOutput = devices.some(d => d.kind === 'audiooutput');
+        if (!hasInput) console.warn("⚠️ No audio input device available.");
+        if (!hasOutput) console.warn("⚠️ No audio output device available.");
+      });
+    });
+
+    // Handle incoming messages
+    client.on('message', (topic, payload) => {
+      const msg = JSON.parse(payload.toString());
+      if (msg.type === 'presence') {
+        peerRegistry[msg.from] = Date.now();
+        updatePeerList();
+        return;
+      }
+      if (msg.to !== peerId) return;
+      targetPeerId = msg.from;
+      console.log(`📥 ${msg.type} from ${msg.from}`);
+
+      switch (msg.type) {
+        case 'offer':
+          handleOffer(msg.data);
+          break;
+        case 'answer':
+          handleAnswer(msg.data);
+          break;
+        case 'ice':
+          handleRemoteICE(msg.data);
+          break;
+      }
+    });
+
+    setInterval(updatePeerList, 1000);
+
+    async function getMedia() {
+      try {
+        // Request both video and audio
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        document.getElementById('localVideo').srcObject = stream;
+        return stream;
+      } catch (err) {
+        console.warn('Could not get user media:', err);
+        // fallback: generate noise
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const bufferSize = 4096;
+        const noiseSource = ctx.createScriptProcessor(bufferSize, 1, 1);
+        noiseSource.onaudioprocess = e => {
+          const output = e.outputBuffer.getChannelData(0);
+          for (let i = 0; i < bufferSize; i++) {
+            output[i] = Math.random() * 2 - 1;
+          }
+        };
+        const dest = ctx.createMediaStreamDestination();
+        noiseSource.connect(dest);
+        // Optional: connect to speakers
+        // noiseSource.connect(ctx.destination);
+        return dest.stream;
+      }
+    }
+
+    async function setupPeerConnection(isOfferer) {
+      if (pc) { pc.close(); }
+      pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+
+      pc.onicecandidate = e => {
+        if (e.candidate) sendSignal('ice', e.candidate);
+      };
+
+      // To gather remote tracks into separate streams
+      pc.ontrack = e => {
+        if (e.track.kind === 'video') {
+          // Add to remote video stream
+          remoteStreams.video.addTrack(e.track);
+          document.getElementById('remoteVideo').srcObject = remoteStreams.video;
+        } else if (e.track.kind === 'audio') {
+          // Add to remote audio stream
+          remoteStreams.audio.addTrack(e.track);
+          document.getElementById('remoteAudio').srcObject = remoteStreams.audio;
+        }
+      };
+
+      // Get local media
+      if (!localStream) {
+        localStream = await getMedia();
+        document.getElementById('localVideo').srcObject = localStream;
+        localStream.getTracks().forEach(track => {
+          pc.addTrack(track, localStream);
+        });
+      }
+
+      if (isOfferer) {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        sendSignal('offer', offer);
+      }
+    }
+
+    async function initiateCall() {
+      await setupPeerConnection(true);
+    }
+
+    async function handleOffer(offer) {
+      await setupPeerConnection(false);
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      sendSignal('answer', answer);
+    }
+
+    async function handleAnswer(answer) {
+      await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    }
+
+    function handleRemoteICE(candidate) {
+      pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(console.warn);
+    }
+
+    document.getElementById('muteButton').addEventListener('click', () => {
+      const button = document.getElementById('muteButton');
+      isMuted = !isMuted;
+      button.classList.toggle('muted', isMuted);
+      document.querySelector('#muteButton i').classList.toggle('fa-microphone-slash', isMuted);
+      document.querySelector('#muteButton i').classList.toggle('fa-microphone', !isMuted);
+      if (localStream) {
+        localStream.getTracks().forEach(track => {
+          if (track.kind === 'audio') { track.enabled = !isMuted; }
+        });
+      }
+    });
+  </script>
+</body>
+</html>
