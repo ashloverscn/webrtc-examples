@@ -37,7 +37,7 @@
     const peerId = 'peer_' + Math.random().toString(36).substr(2, 6);
     let targetPeerId = '';
     let pc, dc;
-    const peerRegistry = {}; // Now an object to hold lastSeen timestamps
+    const peerRegistry = {};
     const terminal = document.getElementById('terminalOutput');
 
     function log(msg) {
