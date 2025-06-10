@@ -3,65 +3,58 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>WebRTC + MQTT</title>
-<!-- Font Awesome for icons -->
+<title>WebRTC Basic</title>
+<!-- Keep original styles, add toggle button style -->
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"/>
 <style>
   body {
     margin: 0;
     font-family: Arial, sans-serif;
-    background-color: #222;
+    background: #222;
     color: #eee;
   }
 
   header {
+    background: #111;
     padding: 10px;
-    background-color: #111;
     position: relative;
-    font-size: 1.2em;
   }
 
-  /* Toggle button on top right corner */
   #togglePeerList {
     position: absolute;
-    top: 10px;
     right: 10px;
+    top: 10px;
+    padding: 5px 10px;
     background: #444;
     border: none;
-    padding: 5px 10px;
     border-radius: 4px;
+    color: white;
     cursor: pointer;
-    color: #fff;
     font-size: 0.9em;
   }
 
-  /* Peer list styles */
   #peers {
+    background: #1a1a1a;
     max-height: 150px;
     overflow-y: auto;
-    background-color: #1a1a1a;
     padding: 10px;
-    display: block;
-    transition: max-height 0.3s ease;
   }
+
   #peers.hidden {
     display: none;
   }
-  #peers h2 {
-    margin: 0 0 10px 0;
-    font-size: 1em;
-  }
+
+  /* Peer list styles (unchanged) */
   #peerList {
     list-style: none;
-    padding: 0;
     margin: 0;
+    padding: 0;
   }
   #peerList li {
     padding: 5px 8px;
-    margin-bottom: 4px;
-    cursor: pointer;
     border-radius: 4px;
-    font-size: 0.9em;
+    cursor: pointer;
+    margin-bottom: 4px;
   }
   #peerList li:hover {
     background-color: #333;
@@ -74,20 +67,20 @@
     color: #555;
   }
 
-  /* Video container styles */
+  /* Video container styles (unchanged) */
   .videos {
     display: flex;
-    flex-wrap: wrap;
     justify-content: center;
+    flex-wrap: wrap;
+    background: #222;
     padding: 10px;
-    background-color: #222;
   }
   .video-box {
-    background-color: #111;
-    border-radius: 8px;
+    background: #111;
     margin: 10px;
     padding: 10px;
-    max-width: 600px;
+    border-radius: 8px;
+    max-width: 640px;
     width: 100%;
     display: flex;
     flex-direction: column;
@@ -96,22 +89,20 @@
   .video-box h3 {
     margin: 0 0 10px 0;
     font-size: 1em;
-    color: #ccc;
   }
   video {
     width: 100%;
-    height: auto;
-    background-color: black;
+    background: black;
     border-radius: 4px;
   }
 
-  /* Chat styles */
+  /* Chat styling (unchanged) */
   #chatContainer {
     max-width: 800px;
     margin: 20px auto;
-    background-color: #111;
-    border-radius: 8px;
+    background: #111;
     padding: 10px;
+    border-radius: 8px;
   }
   #chatContainer h3 {
     margin: 0 0 10px 0;
@@ -120,7 +111,7 @@
   #messages {
     height: 150px;
     overflow-y: auto;
-    background-color: #222;
+    background: #222;
     padding: 8px;
     border-radius: 4px;
     font-family: monospace;
@@ -136,23 +127,22 @@
   #chatInput input {
     flex: 1;
     padding: 8px;
+    background: #222;
     border: none;
     border-radius: 4px 0 0 4px;
-    background-color: #222;
     color: #eee;
     font-family: monospace;
-    font-size: 0.9em;
   }
   #chatInput button {
     padding: 8px 12px;
     border: none;
-    background-color: #4CAF50;
-    color: #fff;
+    background: #4CAF50;
+    color: white;
     border-radius: 0 4px 4px 0;
     cursor: pointer;
   }
 
-  /* Controls */
+  /* Control buttons */
   #controls {
     display: flex;
     justify-content: center;
@@ -160,7 +150,7 @@
     margin: 20px 0;
   }
   #muteBtn {
-    background-color: #4CAF50;
+    background: #4CAF50;
     border: none;
     padding: 10px 15px;
     border-radius: 6px;
@@ -171,13 +161,12 @@
     align-items: center;
   }
   #muteBtn.muted {
-    background-color: #f44336;
+    background: #f44336;
   }
   #muteBtn i {
     margin-right: 8px;
   }
 
-  /* Status message */
   #status {
     text-align: center;
     font-size: 0.9em;
@@ -188,17 +177,15 @@
 <body>
 
 <header>
-  WebRTC + MQTT
+  WebRTC Basic
   <button id="togglePeerList">Hide Active Peers</button>
 </header>
 
-<!-- Peer list -->
 <div id="peers">
   <h2>Active Peers</h2>
   <ul id="peerList"></ul>
 </div>
 
-<!-- Video Streams -->
 <div class="videos">
   <div class="video-box">
     <h3>Local</h3>
@@ -210,7 +197,6 @@
   </div>
 </div>
 
-<!-- Chat -->
 <div id="chatContainer">
   <h3>Chat</h3>
   <div id="messages"></div>
@@ -220,12 +206,10 @@
   </div>
 </div>
 
-<!-- Controls -->
 <div id="controls">
   <button id="muteBtn"><i class="fas fa-microphone"></i> Mute</button>
 </div>
 
-<!-- Status -->
 <div id="status"></div>
 
 <!-- Scripts -->
@@ -243,7 +227,6 @@ let pc = null;
 let localStream = null;
 const remoteStream = new MediaStream();
 
-// MQTT client setup
 const client = mqtt.connect(brokerUrl, {
   rejectUnauthorized: false,
   clientId: 'client_' + peerId,
@@ -251,7 +234,6 @@ const client = mqtt.connect(brokerUrl, {
   password: 'admin1234S',
   protocol: 'wss'
 });
-
 const statusDiv = document.getElementById('status');
 
 function updateStatus(msg) {
@@ -294,15 +276,15 @@ function updatePeerList() {
       li.innerText = `[disconnected]: ${pid}`;
     } else {
       li.innerText = `[online]: ${pid}`;
-      // Auto-initiate call on click
+      // Auto start connection on click
       li.onclick = () => {
         targetPeerId = pid;
-        startCall();
+        initiateCall(); // call automatically
       };
     }
     ul.appendChild(li);
   }
-}
+};
 
 client.on('connect', () => {
   updateStatus(`Connected as ${peerId}`);
@@ -327,7 +309,7 @@ client.on('message', (t, payload) => {
     return;
   }
   if (msg.to && msg.to !== peerId) return;
-  if (msg.from === peerId) return; // Ignore own messages
+  if (msg.from === peerId) return;
 
   targetPeerId = msg.from;
   updateStatus(`Received ${msg.type} from ${msg.from}`);
@@ -361,12 +343,10 @@ async function getMedia() {
   }
 }
 
-// Initiate call if targetPeerId is set
-async function startCall() {
+// Initiate call function (auto start)
+async function initiateCall() {
   if (!targetPeerId) return;
-  if (pc) {
-    pc.close();
-  }
+  if (pc) pc.close();
   pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
   pc.onicecandidate = e => {
     if (e.candidate) sendSignal('ice', e.candidate);
@@ -386,7 +366,7 @@ async function startCall() {
   sendSignal('offer', offer);
 }
 
-// Handle incoming offer
+// Handle incoming offer (auto answer)
 async function handleOffer(offer) {
   if (pc) pc.close();
   pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
@@ -414,19 +394,19 @@ async function handleAnswer(answer) {
   await pc.setRemoteDescription(new RTCSessionDescription(answer));
 }
 
-// Handle ICE candidate
+// Handle ICE
 function handleRemoteIce(candidate) {
   pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(e => console.warn(e));
 }
 
-// Send signaling data
+// Send signaling
 function sendSignal(type, data) {
   if (targetPeerId) {
     client.publish(topic, JSON.stringify({ type, from: peerId, to: targetPeerId, data }));
   }
 }
 
-// Mute/unmute
+// Mute button toggle
 const muteBtn = document.getElementById('muteBtn');
 let isMuted = false;
 muteBtn.onclick = () => {
@@ -445,7 +425,7 @@ muteBtn.onclick = () => {
   }
 };
 
-// Chat message send
+// Chat functions (unchanged)
 const messagesDiv = document.getElementById('messages');
 const chatInput = document.getElementById('chatMessage');
 const sendBtn = document.getElementById('sendBtn');
@@ -470,18 +450,12 @@ function addMessage(text) {
   messagesDiv.scrollTop = messagesDiv.scrollHeight;
 }
 
-// Automatically attempt to connect when a peer is clicked or discovered
-// Also, when receiving an offer, immediately answer
-
-// When a peer is selected (via click), start call automatically
-// Or, if you prefer, start call automatically for the first peer found
-// For example, after updatePeerList, you can auto-call the first peer
-// Here's a simple trigger:
+// **Automatic signaling:** periodically check if peer selected and no connection, then call
 setInterval(() => {
   if (targetPeerId && !pc) {
-    startCall();
+    initiateCall();
   }
-}, 3000); // Try every 3s if no call yet
+}, 3000); // attempt to connect every 3 seconds if conditions met
 
 </script>
 </body>
