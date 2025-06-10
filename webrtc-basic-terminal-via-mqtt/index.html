@@ -13,7 +13,7 @@
     #peerList li { cursor: pointer; margin-bottom: 5px; }
     #peerList li:hover { text-decoration: underline; }
     #peerList li.me { color: #888; cursor: default; user-select: none; }
-    #peerList li.offline { color: #666; font-style: italic; cursor: default; }
+    #peerList li.offline { color: #555; font-style: italic; }
   </style>
 </head>
 <body>
@@ -36,7 +36,7 @@
     const peerId = 'peer_' + Math.random().toString(36).substr(2, 6);
     let targetPeerId = '';
     let pc, dc;
-    const peerRegistry = new Map();
+    const peerRegistry = {}; // Now an object to hold lastSeen timestamps
     const terminal = document.getElementById('terminalOutput');
 
     function log(msg) {
@@ -45,14 +45,24 @@
     }
 
     function updatePeerList() {
+      const now = Date.now();
       const ul = document.getElementById('peers');
       ul.innerHTML = '';
-      for (let [pid, info] of peerRegistry.entries()) {
+      for (const pid in peerRegistry) {
+        const lastSeen = peerRegistry[pid];
+        const isOffline = now - lastSeen > 1000;
+        const isExpired = now - lastSeen > 5000;
+
+        if (isExpired) {
+          delete peerRegistry[pid];
+          continue;
+        }
+
         const li = document.createElement('li');
         if (pid === peerId) {
           li.className = 'me';
           li.innerHTML = `[me]:${pid}`;
-        } else if (info.offline) {
+        } else if (isOffline) {
           li.className = 'offline';
           li.textContent = `[disconnected]:${pid}`;
         } else {
@@ -65,21 +75,6 @@
         }
         ul.appendChild(li);
       }
-    }
-
-    function pruneOfflinePeers() {
-      const now = Date.now();
-      for (let [pid, info] of peerRegistry.entries()) {
-        const elapsed = now - info.lastSeen;
-        if (elapsed > 15000) {
-          peerRegistry.delete(pid);
-        } else if (elapsed > 10000) {
-          info.offline = true;
-        } else {
-          info.offline = false;
-        }
-      }
-      updatePeerList();
     }
 
     function sendSignal(type, data) {
@@ -105,27 +100,18 @@
     client.on('connect', () => {
       log(`✅ Connected as ${peerId}`);
       client.subscribe(topic);
-
       client.publish(topic, JSON.stringify({ type: 'presence', from: peerId }));
-
       setInterval(() => {
         client.publish(topic, JSON.stringify({ type: 'presence', from: peerId }));
-      }, 1000); // Broadcast every second
-
-      setInterval(pruneOfflinePeers, 1000); // Monitor every second
+      }, 1000);
     });
 
     client.on('message', (t, payload) => {
       const msg = JSON.parse(payload.toString());
       if (msg.type === 'presence') {
-        peerRegistry.set(msg.from, {
-          lastSeen: Date.now(),
-          offline: false
-        });
-        updatePeerList();
+        peerRegistry[msg.from] = Date.now();
         return;
       }
-
       if (msg.to !== peerId) return;
 
       log(`📥 ${msg.type.toUpperCase()} from ${msg.from}`);
@@ -143,6 +129,8 @@
           break;
       }
     });
+
+    setInterval(updatePeerList, 1000);
 
     async function setupPeerConnection(isOfferer) {
       pc = new RTCPeerConnection({
