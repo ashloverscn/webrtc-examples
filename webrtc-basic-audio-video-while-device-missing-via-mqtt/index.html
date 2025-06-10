@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>WebRTC + MQTT Video & Chat</title>
+<title>WebRTC + MQTT</title>
 <!-- Font Awesome for icons -->
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"/>
 <style>
@@ -17,8 +17,22 @@
   header {
     padding: 10px;
     background-color: #111;
-    text-align: center;
+    position: relative;
     font-size: 1.2em;
+  }
+
+  /* Toggle button on top right corner */
+  #togglePeerList {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background: #444;
+    border: none;
+    padding: 5px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    color: #fff;
+    font-size: 0.9em;
   }
 
   /* Peer list styles */
@@ -27,6 +41,11 @@
     overflow-y: auto;
     background-color: #1a1a1a;
     padding: 10px;
+    display: block;
+    transition: max-height 0.3s ease;
+  }
+  #peers.hidden {
+    display: none;
   }
   #peers h2 {
     margin: 0 0 10px 0;
@@ -168,7 +187,10 @@
 </head>
 <body>
 
-<header>WebRTC + MQTT Video & Chat</header>
+<header>
+  WebRTC + MQTT
+  <button id="togglePeerList">Hide Active Peers</button>
+</header>
 
 <!-- Peer list -->
 <div id="peers">
@@ -225,8 +247,8 @@ const remoteStream = new MediaStream();
 const client = mqtt.connect(brokerUrl, {
   rejectUnauthorized: false,
   clientId: 'client_' + peerId,
-  username: 'admin', // adjust accordingly
-  password: 'admin1234S', // adjust accordingly
+  username: 'admin',
+  password: 'admin1234S',
   protocol: 'wss'
 });
 
@@ -236,6 +258,19 @@ function updateStatus(msg) {
   statusDiv.innerText = msg;
   console.log(msg);
 }
+
+// Toggle peer list display
+const toggleBtn = document.getElementById('togglePeerList');
+const peersDiv = document.getElementById('peers');
+toggleBtn.onclick = () => {
+  if (peersDiv.style.display === 'none') {
+    peersDiv.style.display = 'block';
+    toggleBtn.innerText = 'Hide Active Peers';
+  } else {
+    peersDiv.style.display = 'none';
+    toggleBtn.innerText = 'Show Active Peers';
+  }
+};
 
 // Update peer list
 function updatePeerList() {
@@ -259,6 +294,7 @@ function updatePeerList() {
       li.innerText = `[disconnected]: ${pid}`;
     } else {
       li.innerText = `[online]: ${pid}`;
+      // Auto-initiate call on click
       li.onclick = () => {
         targetPeerId = pid;
         startCall();
@@ -271,6 +307,7 @@ function updatePeerList() {
 client.on('connect', () => {
   updateStatus(`Connected as ${peerId}`);
   client.subscribe(topic);
+  // Announce presence periodically
   setInterval(() => {
     client.publish(topic, JSON.stringify({ type: 'presence', from: peerId }));
   }, 1000);
@@ -290,8 +327,11 @@ client.on('message', (t, payload) => {
     return;
   }
   if (msg.to && msg.to !== peerId) return;
+  if (msg.from === peerId) return; // Ignore own messages
+
   targetPeerId = msg.from;
   updateStatus(`Received ${msg.type} from ${msg.from}`);
+
   switch (msg.type) {
     case 'offer':
       handleOffer(msg.data);
@@ -321,7 +361,9 @@ async function getMedia() {
   }
 }
 
+// Initiate call if targetPeerId is set
 async function startCall() {
+  if (!targetPeerId) return;
   if (pc) {
     pc.close();
   }
@@ -344,6 +386,7 @@ async function startCall() {
   sendSignal('offer', offer);
 }
 
+// Handle incoming offer
 async function handleOffer(offer) {
   if (pc) pc.close();
   pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
@@ -366,16 +409,21 @@ async function handleOffer(offer) {
   sendSignal('answer', answer);
 }
 
+// Handle answer
 async function handleAnswer(answer) {
   await pc.setRemoteDescription(new RTCSessionDescription(answer));
 }
 
+// Handle ICE candidate
 function handleRemoteIce(candidate) {
   pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(e => console.warn(e));
 }
 
+// Send signaling data
 function sendSignal(type, data) {
-  client.publish(topic, JSON.stringify({ type, from: peerId, to: targetPeerId, data }));
+  if (targetPeerId) {
+    client.publish(topic, JSON.stringify({ type, from: peerId, to: targetPeerId, data }));
+  }
 }
 
 // Mute/unmute
@@ -397,7 +445,7 @@ muteBtn.onclick = () => {
   }
 };
 
-// Chat messaging
+// Chat message send
 const messagesDiv = document.getElementById('messages');
 const chatInput = document.getElementById('chatMessage');
 const sendBtn = document.getElementById('sendBtn');
@@ -421,7 +469,20 @@ function addMessage(text) {
   messagesDiv.appendChild(p);
   messagesDiv.scrollTop = messagesDiv.scrollHeight;
 }
-</script>
 
+// Automatically attempt to connect when a peer is clicked or discovered
+// Also, when receiving an offer, immediately answer
+
+// When a peer is selected (via click), start call automatically
+// Or, if you prefer, start call automatically for the first peer found
+// For example, after updatePeerList, you can auto-call the first peer
+// Here's a simple trigger:
+setInterval(() => {
+  if (targetPeerId && !pc) {
+    startCall();
+  }
+}, 3000); // Try every 3s if no call yet
+
+</script>
 </body>
 </html>
