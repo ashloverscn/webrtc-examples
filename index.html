@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WebRTC Serial Terminal with MQTT</title>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <style>
+    pre { background: #111; color: #0f0; padding: 10px; height: 200px; overflow-y: scroll; }
+    #peerList {
+      background: #222; color: #ccc; padding: 10px; margin-top: 10px;
+      border: 1px solid #444; border-radius: 5px;
+    }
+    #peerList ul { list-style: none; padding-left: 0; }
+    #peerList li { cursor: pointer; margin-bottom: 5px; }
+    #peerList li:hover { text-decoration: underline; }
+    #peerList li.me { color: #888; cursor: default; user-select: none; }
+  </style>
+</head>
+<body>
+  <h2>WebRTC Serial Terminal (MQTT Signaling)</h2>
+
+  <div id="peerList">
+    <strong>Active Peers:</strong>
+    <ul id="peers"></ul>
+  </div>
+
+  <h3>Terminal Output</h3>
+  <pre id="terminalOutput"></pre>
+
+  <input type="text" id="inputField" placeholder="Type a command..." onkeydown="checkEnter(event)">
+  <button onclick="sendMessage()">Send</button>
+
+  <script>
+    const brokerURL = 'wss://e5122a5328ea4986a0295fa6e037655a.s2.eu.hivemq.cloud:8884/mqtt';
+    const topic = 'webrtc/signaling';
+    const peerId = 'peer_' + Math.random().toString(36).substr(2, 6);
+    let targetPeerId = '';
+    let pc, dc;
+    let peerRegistry = new Set();
+    const terminal = document.getElementById('terminalOutput');
+
+    function log(msg) {
+      terminal.innerText += msg + "\n";
+      terminal.scrollTop = terminal.scrollHeight;
+    }
+
+    function updatePeerList() {
+      const ul = document.getElementById('peers');
+      ul.innerHTML = '';
+      Array.from(peerRegistry).forEach(pid => {
+        const li = document.createElement('li');
+        if (pid === peerId) {
+          li.className = 'me';
+          li.innerHTML = `[me]:${pid}`;
+        } else {
+          li.textContent = `peer:${pid}`;
+          li.onclick = () => {
+            document.getElementById('inputField').focus();
+            targetPeerId = pid;
+            initiateCall();
+          };
+        }
+        ul.appendChild(li);
+      });
+    }
+
+    function sendSignal(type, data) {
+      if (!targetPeerId) return log('⚠️ Select a peer first.');
+      const payload = {
+        type,
+        from: peerId,
+        to: targetPeerId,
+        data,
+      };
+      client.publish(topic, JSON.stringify(payload));
+      log(`📤 Sent ${type.toUpperCase()} to ${targetPeerId}`);
+    }
+
+    const client = mqtt.connect(brokerURL, {
+      rejectUnauthorized: false,
+      clientId: 'signaling_' + peerId,
+      username: 'admin',
+      password: 'admin1234S',
+      protocol: 'wss',
+    });
+
+    client.on('connect', () => {
+      log(`✅ Connected as ${peerId}`);
+      client.subscribe(topic);
+      client.publish(topic, JSON.stringify({ type: 'presence', from: peerId }));
+    });
+
+    client.on('message', (t, payload) => {
+      const msg = JSON.parse(payload.toString());
+      if (msg.type === 'presence') {
+        peerRegistry.add(msg.from);
+        updatePeerList();
+        return;
+      }
+      if (msg.to !== peerId) return;
+
+      log(`📥 ${msg.type.toUpperCase()} from ${msg.from}`);
+      targetPeerId = msg.from;
+
+      switch (msg.type) {
+        case 'offer':
+          handleOffer(msg.data);
+          break;
+        case 'answer':
+          handleAnswer(msg.data);
+          break;
+        case 'ice':
+          handleRemoteICE(msg.data);
+          break;
+      }
+    });
+
+    async function setupPeerConnection(isOfferer) {
+      pc = new RTCPeerConnection({
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+      });
+
+      if (isOfferer) {
+        dc = pc.createDataChannel("serial");
+        setupDataChannel();
+      }
+
+      pc.ondatachannel = event => {
+        dc = event.channel;
+        setupDataChannel();
+      };
+
+      pc.onicecandidate = e => {
+        if (e.candidate) sendSignal('ice', e.candidate);
+      };
+
+      const offer = isOfferer ? await pc.createOffer() : null;
+      if (offer) {
+        await pc.setLocalDescription(offer);
+        sendSignal('offer', offer);
+      }
+    }
+
+    async function initiateCall() {
+      await setupPeerConnection(true);
+    }
+
+    async function handleOffer(offer) {
+      await setupPeerConnection(false);
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      sendSignal('answer', answer);
+    }
+
+    async function handleAnswer(answer) {
+      await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    }
+
+    function handleRemoteICE(candidate) {
+      pc.addIceCandidate(new RTCIceCandidate(candidate));
+    }
+
+    function setupDataChannel() {
+      dc.onopen = () => log("=== DataChannel Opened ===");
+      dc.onclose = () => log("=== DataChannel Closed ===");
+      dc.onmessage = event => {
+        log("> " + event.data);
+      };
+    }
+
+    function sendMessage() {
+      const input = document.getElementById('inputField');
+      if (dc && dc.readyState === "open") {
+        dc.send(input.value);
+        log("< " + input.value);
+        input.value = "";
+      } else {
+        log("⚠️ DataChannel not open.");
+      }
+    }
+
+    function checkEnter(e) {
+      if (e.key === "Enter") sendMessage();
+    }
+  </script>
+</body>
+</html>
