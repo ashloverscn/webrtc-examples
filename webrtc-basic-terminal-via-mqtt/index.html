@@ -52,7 +52,7 @@
           li.className = 'me';
           li.innerHTML = `[me]:${pid}`;
         } else {
-          li.textContent = `peer:${pid}`;
+          li.textContent = `[online]:${pid}`;
           li.onclick = () => {
             document.getElementById('inputField').focus();
             targetPeerId = pid;
