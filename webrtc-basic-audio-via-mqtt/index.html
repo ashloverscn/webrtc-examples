@@ -124,6 +124,28 @@
 
     setInterval(updatePeerList, 1000);
 
+    async function getMicrophoneOrNoise() {
+      try {
+        log("🎤 Trying to get microphone...");
+        return await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (err) {
+        log("⚠️ Microphone not available, using noise stream.");
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const bufferSize = 4096;
+        const noise = audioCtx.createScriptProcessor(bufferSize, 1, 1);
+        noise.onaudioprocess = e => {
+          const output = e.outputBuffer.getChannelData(0);
+          for (let i = 0; i < bufferSize; i++) {
+            output[i] = Math.random() * 2 - 1; // white noise
+          }
+        };
+        const dest = audioCtx.createMediaStreamDestination();
+        noise.connect(dest);
+        noise.connect(audioCtx.destination); // optionally hear it locally
+        return dest.stream;
+      }
+    }
+
     async function setupPeerConnection(isOfferer) {
       pc = new RTCPeerConnection({
         iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
@@ -138,13 +160,8 @@
       };
 
       if (!localStream) {
-        try {
-          localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-        } catch (err) {
-          alert("Microphone error: " + err.message);
-          return;
-        }
+        localStream = await getMicrophoneOrNoise();
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
       }
 
       if (isOfferer) {
