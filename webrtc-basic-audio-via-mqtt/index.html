@@ -96,6 +96,19 @@
       setInterval(() => {
         client.publish(topic, JSON.stringify({ type: 'presence', from: peerId }));
       }, 1000);
+
+      // Check for available devices
+      navigator.mediaDevices.enumerateDevices().then(devices => {
+        const hasInput = devices.some(d => d.kind === 'audioinput');
+        const hasOutput = devices.some(d => d.kind === 'audiooutput');
+        if (!hasInput && !hasOutput) {
+          console.warn("⚠️ No audio input or output devices available.");
+        } else if (!hasInput) {
+          console.warn("⚠️ No audio input device available.");
+        } else if (!hasOutput) {
+          console.warn("⚠️ No audio output device available.");
+        }
+      });
     });
 
     client.on('message', (t, payload) => {
@@ -136,12 +149,12 @@
         noise.onaudioprocess = e => {
           const output = e.outputBuffer.getChannelData(0);
           for (let i = 0; i < bufferSize; i++) {
-            output[i] = Math.random() * 2 - 1; // white noise
+            output[i] = Math.random() * 2 - 1;
           }
         };
         const dest = audioCtx.createMediaStreamDestination();
         noise.connect(dest);
-        noise.connect(audioCtx.destination); // optionally hear it locally
+        noise.connect(audioCtx.destination); // comment this out if you don't want to hear local noise
         return dest.stream;
       }
     }
@@ -156,12 +169,41 @@
       };
 
       pc.ontrack = event => {
-        document.getElementById("remoteAudio").srcObject = event.streams[0];
+        const remoteAudio = document.getElementById("remoteAudio");
+        remoteAudio.srcObject = event.streams[0];
+
+        if (typeof remoteAudio.setSinkId === "function") {
+          navigator.mediaDevices.enumerateDevices().then(devices => {
+            const outputs = devices.filter(d => d.kind === "audiooutput");
+            if (outputs.length > 0) {
+              remoteAudio.setSinkId(outputs[0].deviceId).catch(err => {
+                console.warn("❌ Failed to set audio output device:", err);
+              });
+            } else {
+              console.warn("⚠️ No audio output devices found.");
+            }
+          });
+        } else {
+          console.warn("ℹ️ setSinkId not supported in this browser.");
+        }
+
+        // Autoplay workaround
+        remoteAudio.play().catch(err => {
+          console.warn("🔇 Autoplay failed; user interaction may be required.");
+        });
       };
 
-      if (!localStream) {
-        localStream = await getMicrophoneOrNoise();
-        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+      try {
+        if (!localStream) {
+          localStream = await getMicrophoneOrNoise();
+          if (localStream && localStream.getTracks().length > 0) {
+            localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+          } else {
+            console.warn("⚠️ No tracks to add to peer connection.");
+          }
+        }
+      } catch (err) {
+        console.warn("⚠️ No local stream will be used.", err);
       }
 
       if (isOfferer) {
@@ -188,7 +230,9 @@
     }
 
     function handleRemoteICE(candidate) {
-      pc.addIceCandidate(new RTCIceCandidate(candidate));
+      pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(e => {
+        console.warn("Failed to add ICE candidate", e);
+      });
     }
   </script>
 </body>
