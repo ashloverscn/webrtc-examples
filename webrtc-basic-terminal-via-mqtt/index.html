@@ -13,6 +13,7 @@
     #peerList li { cursor: pointer; margin-bottom: 5px; }
     #peerList li:hover { text-decoration: underline; }
     #peerList li.me { color: #888; cursor: default; user-select: none; }
+    #peerList li.offline { color: #666; font-style: italic; cursor: default; }
   </style>
 </head>
 <body>
@@ -35,7 +36,7 @@
     const peerId = 'peer_' + Math.random().toString(36).substr(2, 6);
     let targetPeerId = '';
     let pc, dc;
-    let peerRegistry = new Set();
+    const peerRegistry = new Map();
     const terminal = document.getElementById('terminalOutput');
 
     function log(msg) {
@@ -46,11 +47,14 @@
     function updatePeerList() {
       const ul = document.getElementById('peers');
       ul.innerHTML = '';
-      Array.from(peerRegistry).forEach(pid => {
+      for (let [pid, info] of peerRegistry.entries()) {
         const li = document.createElement('li');
         if (pid === peerId) {
           li.className = 'me';
           li.innerHTML = `[me]:${pid}`;
+        } else if (info.offline) {
+          li.className = 'offline';
+          li.textContent = `[disconnected]:${pid}`;
         } else {
           li.textContent = `[online]:${pid}`;
           li.onclick = () => {
@@ -60,7 +64,22 @@
           };
         }
         ul.appendChild(li);
-      });
+      }
+    }
+
+    function pruneOfflinePeers() {
+      const now = Date.now();
+      for (let [pid, info] of peerRegistry.entries()) {
+        const elapsed = now - info.lastSeen;
+        if (elapsed > 15000) {
+          peerRegistry.delete(pid);
+        } else if (elapsed > 10000) {
+          info.offline = true;
+        } else {
+          info.offline = false;
+        }
+      }
+      updatePeerList();
     }
 
     function sendSignal(type, data) {
@@ -86,16 +105,27 @@
     client.on('connect', () => {
       log(`✅ Connected as ${peerId}`);
       client.subscribe(topic);
+
       client.publish(topic, JSON.stringify({ type: 'presence', from: peerId }));
+
+      setInterval(() => {
+        client.publish(topic, JSON.stringify({ type: 'presence', from: peerId }));
+      }, 1000); // Broadcast every second
+
+      setInterval(pruneOfflinePeers, 1000); // Monitor every second
     });
 
     client.on('message', (t, payload) => {
       const msg = JSON.parse(payload.toString());
       if (msg.type === 'presence') {
-        peerRegistry.add(msg.from);
+        peerRegistry.set(msg.from, {
+          lastSeen: Date.now(),
+          offline: false
+        });
         updatePeerList();
         return;
       }
+
       if (msg.to !== peerId) return;
 
       log(`📥 ${msg.type.toUpperCase()} from ${msg.from}`);
