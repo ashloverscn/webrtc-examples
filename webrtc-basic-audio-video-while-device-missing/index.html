@@ -110,9 +110,12 @@
         if (isExpired) { delete peerRegistry[pid]; continue; }
         const li = document.createElement('li');
         if (pid === peerId) {
-          li.className = 'me'; li.innerHTML = `[me]:${pid}`;
+          li.className = 'me';
+          li.textContent = `[me]:${pid}`;
         } else if (isOffline) {
-          li.className = 'offline'; li.textContent = `[disconnected]:${pid}`;
+          li.className = 'offline';
+          li.textContent = `[disconnected]:${pid}`;
+          li.onclick = () => { targetPeerId = pid; initiateCall(); };
         } else {
           li.textContent = `[online]:${pid}`;
           li.onclick = () => { targetPeerId = pid; initiateCall(); };
