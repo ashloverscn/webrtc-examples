@@ -50,7 +50,7 @@
     #peerList ul { list-style: none; padding-left: 0; }
     #peerList li { cursor: pointer; margin-bottom: 5px; }
     #peerList li:hover { text-decoration: underline; }
-    #peerList li.me { color: #888; cursor: default; user-select: none; }
+    #peerList li.me { color: #888; cursor: default; user-select: none; text-decoration: none; }
     #peerList li.offline { color: #555; font-style: italic; }
     #toggleBtn {
       position: absolute;
@@ -103,19 +103,20 @@
       const now = Date.now();
       const ul = document.getElementById('peers');
       ul.innerHTML = '';
+      const myLi = document.createElement('li');
+      myLi.className = 'me';
+      myLi.innerHTML = `[me]:${peerId}`;
+      ul.appendChild(myLi);
+
       for (const pid in peerRegistry) {
+        if (pid === peerId) continue;
         const lastSeen = peerRegistry[pid];
         const isOffline = now - lastSeen > 1000;
         const isExpired = now - lastSeen > 5000;
         if (isExpired) { delete peerRegistry[pid]; continue; }
         const li = document.createElement('li');
-        if (pid === peerId) {
-          li.className = 'me';
-          li.textContent = `[me]:${pid}`;
-        } else if (isOffline) {
-          li.className = 'offline';
-          li.textContent = `[disconnected]:${pid}`;
-          li.onclick = () => { targetPeerId = pid; initiateCall(); };
+        if (isOffline) {
+          li.className = 'offline'; li.textContent = `[disconnected]:${pid}`;
         } else {
           li.textContent = `[online]:${pid}`;
           li.onclick = () => { targetPeerId = pid; initiateCall(); };
