@@ -52,9 +52,19 @@
     #peerList li:hover { text-decoration: underline; }
     #peerList li.me { color: #888; cursor: default; user-select: none; }
     #peerList li.offline { color: #555; font-style: italic; }
+    #toggleBtn {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      padding: 4px 8px;
+      font-weight: bold;
+      cursor: pointer;
+    }
   </style>
 </head>
 <body>
+  <button id="toggleBtn" onclick="togglePeerList()">H</button>
+
   <h2>WebRTC Audio/Video Stream with Serial Terminal</h2>
   <div id="peerList">
     <strong>Active Peers:</strong>
@@ -252,6 +262,18 @@
 
     function checkEnter(e) {
       if (e.key === "Enter") sendMessage();
+    }
+
+    function togglePeerList() {
+      const peerList = document.getElementById("peerList");
+      const btn = document.getElementById("toggleBtn");
+      if (peerList.style.display === "none") {
+        peerList.style.display = "block";
+        btn.innerText = "H";
+      } else {
+        peerList.style.display = "none";
+        btn.innerText = "S";
+      }
     }
   </script>
 </body>
