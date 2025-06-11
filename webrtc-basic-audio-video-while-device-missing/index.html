@@ -88,7 +88,8 @@
   <script>
     const brokerURL = 'wss://e5122a5328ea4986a0295fa6e037655a.s2.eu.hivemq.cloud:8884/mqtt';
     const topic = 'webrtc/signaling';
-    const peerId = 'peer_' + Math.random().toString(36).substr(2, 6);
+    const peerId = localStorage.getItem('persistentPeerId') || 'peer_' + Math.random().toString(36).substr(2, 6);
+    localStorage.setItem('persistentPeerId', peerId);
     let targetPeerId = '';
     let pc, dc, localStream;
     const peerRegistry = {};
