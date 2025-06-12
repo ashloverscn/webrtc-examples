@@ -132,7 +132,7 @@
       client.subscribe([signalingTopic, publicChatTopic, historyTopic], {}, (err) => {
         if (!err) {
           publicChatSubscribed = true;
-          log("📡 Subscribed to PublicChat + history topics");
+          log("📡 Subscribed to PublicChat + Last1008MSGS");
           publicMessageQueue.forEach(msg => {
             client.publish(publicChatTopic, msg);
             client.publish(historyTopic, msg, { retain: true });
