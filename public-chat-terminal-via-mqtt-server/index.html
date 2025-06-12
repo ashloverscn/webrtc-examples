@@ -28,12 +28,14 @@
   <script>
     const brokerURL = 'wss://e5122a5328ea4986a0295fa6e037655a.s2.eu.hivemq.cloud:8884/mqtt';
     const publicChatTopic = 'PublicChat';
+    const historyTopic = 'Last1008MSGS';
     const peerId = localStorage.getItem('persistentPeerId') || 'peer_' + Math.random().toString(36).substr(2, 6);
     localStorage.setItem('persistentPeerId', peerId);
 
     let mqttConnected = false;
     let publicChatSubscribed = false;
     let publicMessageQueue = [];
+    let messageBuffer = [];
 
     const publicOutput = document.getElementById('publicChatOutput');
 
@@ -47,21 +49,37 @@
 
     client.on('connect', () => {
       mqttConnected = true;
-      client.subscribe(publicChatTopic, {}, (err) => {
+      client.subscribe([publicChatTopic, historyTopic], {}, (err) => {
         if (!err) {
           publicChatSubscribed = true;
-          publicMessageQueue.forEach(msg => client.publish(publicChatTopic, msg));
+          publicMessageQueue.forEach(msg => {
+            client.publish(publicChatTopic, msg);
+            client.publish(historyTopic, msg, { retain: true });
+          });
           publicMessageQueue = [];
         }
       });
     });
 
-    client.on('message', (t, payload) => {
-      if (t === publicChatTopic) {
+    client.on('message', (topic, payload) => {
+      if (topic === historyTopic) {
+        try {
+          const history = JSON.parse(payload.toString());
+          if (Array.isArray(history)) {
+            messageBuffer = history;
+            displayMessages();
+          }
+        } catch (e) {}
+      }
+
+      if (topic === publicChatTopic) {
         const msg = JSON.parse(payload.toString());
-        if (msg.text && msg.from && msg.from !== peerId) {
-          publicOutput.textContent += `[${msg.from}]: ${msg.text}\n`;
-          publicOutput.scrollTop = publicOutput.scrollHeight;
+        if (!msg.text || !msg.from || !msg.timestamp) return;
+        if (!messageBuffer.some(m => m.timestamp === msg.timestamp)) {
+          messageBuffer.push(msg);
+          if (messageBuffer.length > 1008) messageBuffer.shift();
+          publishBuffer(); // update retained message
+          displayMessages();
         }
       }
     });
@@ -70,17 +88,39 @@
       const input = document.getElementById('publicChatInput');
       const message = input.value.trim();
       if (!message) return;
-      const payload = JSON.stringify({ from: peerId, text: message });
+
+      const msgObj = {
+        from: peerId,
+        text: message,
+        timestamp: Date.now()
+      };
+      const payload = JSON.stringify(msgObj);
 
       if (mqttConnected && publicChatSubscribed) {
         client.publish(publicChatTopic, payload);
+        messageBuffer.push(msgObj);
+        if (messageBuffer.length > 1008) messageBuffer.shift();
+        publishBuffer();
       } else {
         publicMessageQueue.push(payload);
       }
 
-      publicOutput.textContent += `[me]: ${message}\n`;
-      publicOutput.scrollTop = publicOutput.scrollHeight;
+      displayMessages();
       input.value = "";
+    }
+
+    function publishBuffer() {
+      client.publish(historyTopic, JSON.stringify(messageBuffer), { retain: true });
+    }
+
+    function displayMessages() {
+      const sorted = messageBuffer.slice().sort((a, b) => a.timestamp - b.timestamp);
+      publicOutput.textContent = "";
+      sorted.forEach(m => {
+        const prefix = m.from === peerId ? "[me]" : `[${m.from}]`;
+        publicOutput.textContent += `${prefix}: ${m.text}\n`;
+      });
+      publicOutput.scrollTop = publicOutput.scrollHeight;
     }
 
     function checkPublicEnter(e) {
