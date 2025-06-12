@@ -97,12 +97,14 @@
     const brokerURL = 'wss://e5122a5328ea4986a0295fa6e037655a.s2.eu.hivemq.cloud:8884/mqtt';
     const signalingTopic = 'webrtc/signaling';
     const publicChatTopic = 'PublicChat';
+    const historyTopic = 'Last1008MSGS';
     const peerId = localStorage.getItem('persistentPeerId') || 'peer_' + Math.random().toString(36).substr(2, 6);
     localStorage.setItem('persistentPeerId', peerId);
 
     let mqttConnected = false;
     let publicChatSubscribed = false;
     let publicMessageQueue = [];
+    let messageBuffer = [];
 
     let targetPeerId = '';
     let pc, dc, localStream;
@@ -113,6 +115,135 @@
     function log(msg) {
       terminal.innerText += msg + "\n";
       terminal.scrollTop = terminal.scrollHeight;
+    }
+
+    const client = mqtt.connect(brokerURL, {
+      rejectUnauthorized: false,
+      clientId: 'signaling_' + peerId,
+      username: 'admin',
+      password: 'admin1234S',
+      protocol: 'wss'
+    });
+
+    client.on('connect', () => {
+      mqttConnected = true;
+      log(`✅ Connected as ${peerId}`);
+
+      client.subscribe([signalingTopic, publicChatTopic, historyTopic], {}, (err) => {
+        if (!err) {
+          publicChatSubscribed = true;
+          log("📡 Subscribed to PublicChat + history topics");
+          publicMessageQueue.forEach(msg => {
+            client.publish(publicChatTopic, msg);
+            client.publish(historyTopic, msg, { retain: true });
+          });
+          publicMessageQueue = [];
+
+          sendPresence();
+          setInterval(sendPresence, 1000);
+        }
+      });
+    });
+
+    client.on('message', (t, payload) => {
+      const msg = JSON.parse(payload.toString());
+
+      if (t === signalingTopic && msg.type === 'presence') {
+        peerRegistry[msg.from] = Date.now();
+        return;
+      }
+
+      if (t === historyTopic) {
+        if (Array.isArray(msg)) {
+          messageBuffer = msg;
+          displayMessages();
+        }
+        return;
+      }
+
+      if (t === publicChatTopic) {
+        if (!msg.text || !msg.from || !msg.timestamp) return;
+        if (!messageBuffer.some(m => m.timestamp === msg.timestamp)) {
+          messageBuffer.push(msg);
+          if (messageBuffer.length > 1008) messageBuffer.shift();
+          publishBuffer();
+          displayMessages();
+        }
+        return;
+      }
+
+      if (msg.to !== peerId) return;
+      log(`📥 ${msg.type.toUpperCase()} from ${msg.from}`);
+      targetPeerId = msg.from;
+      switch (msg.type) {
+        case 'offer': handleOffer(msg.data); break;
+        case 'answer': handleAnswer(msg.data); break;
+        case 'ice': handleRemoteICE(msg.data); break;
+      }
+    });
+
+    function sendPresence() {
+      const presence = JSON.stringify({ type: 'presence', from: peerId });
+      client.publish(signalingTopic, presence);
+    }
+
+    function sendPublicMessage() {
+      const input = document.getElementById('publicChatInput');
+      const message = input.value.trim();
+      if (!message) return;
+
+      const msgObj = {
+        from: peerId,
+        text: message,
+        timestamp: Date.now()
+      };
+      const payload = JSON.stringify(msgObj);
+
+      if (mqttConnected && publicChatSubscribed) {
+        client.publish(publicChatTopic, payload);
+        messageBuffer.push(msgObj);
+        if (messageBuffer.length > 1008) messageBuffer.shift();
+        publishBuffer();
+      } else {
+        publicMessageQueue.push(payload);
+      }
+
+      displayMessages();
+      input.value = "";
+    }
+
+    function publishBuffer() {
+      client.publish(historyTopic, JSON.stringify(messageBuffer), { retain: true });
+    }
+
+    function displayMessages() {
+      const sorted = messageBuffer.slice().sort((a, b) => a.timestamp - b.timestamp);
+      publicOutput.textContent = "";
+      sorted.forEach(m => {
+        const prefix = m.from === peerId ? "[me]" : `[${m.from}]`;
+        publicOutput.textContent += `${prefix}: ${m.text}\n`;
+      });
+      publicOutput.scrollTop = publicOutput.scrollHeight;
+    }
+
+    function checkEnter(e) {
+      if (e.key === "Enter") sendMessage();
+    }
+
+    function checkPublicEnter(e) {
+      if (e.key === "Enter") sendPublicMessage();
+    }
+
+    function togglePeerList() {
+      const peerList = document.getElementById("peerList");
+      const btn = document.getElementById("toggleBtn");
+      if (peerList.style.display === "none") {
+        peerList.style.display = "block";
+        btn.innerText = "H";
+      } else {
+        peerList.style.display = "none";
+        btn.innerText = "S";
+      }
     }
 
     function updatePeerList() {
@@ -140,72 +271,6 @@
         ul.appendChild(li);
       }
     }
-
-    const client = mqtt.connect(brokerURL, {
-      rejectUnauthorized: false,
-      clientId: 'signaling_' + peerId,
-      username: 'admin',
-      password: 'admin1234S',
-      protocol: 'wss'
-    });
-
-    client.on('connect', () => {
-      mqttConnected = true;
-      log(`✅ Connected as ${peerId}`);
-
-      client.subscribe(signalingTopic, {}, (err) => {
-        if (!err) {
-          log("🔔 Subscribed to signalingTopic");
-          sendPresence();
-          setInterval(sendPresence, 1000);
-        }
-      });
-
-      client.subscribe(publicChatTopic, {}, (err) => {
-        if (!err) {
-          publicChatSubscribed = true;
-          log("📡 Subscribed to PublicChat topic");
-          publicMessageQueue.forEach(msg => client.publish(publicChatTopic, msg));
-          publicMessageQueue = [];
-        }
-      });
-    });
-
-    function sendPresence() {
-      const presence = JSON.stringify({ type: 'presence', from: peerId });
-      client.publish(signalingTopic, presence);
-      client.publish(publicChatTopic, presence);
-    }
-
-    client.on('message', (t, payload) => {
-      const msg = JSON.parse(payload.toString());
-
-      if (t === signalingTopic && msg.type === 'presence') {
-        peerRegistry[msg.from] = Date.now();
-        return;
-      }
-
-      if (t === publicChatTopic) {
-        if (msg.type === 'presence') return; // ignore presence on public chat
-        if (msg.text && msg.from) {
-          if (msg.from !== peerId) {
-            publicOutput.textContent += `[${msg.from}]: ${msg.text}\n`;
-            publicOutput.scrollTop = publicOutput.scrollHeight;
-          }
-        }
-        return;
-      }
-
-      if (msg.to !== peerId) return;
-      log(`📥 ${msg.type.toUpperCase()} from ${msg.from}`);
-      targetPeerId = msg.from;
-      switch (msg.type) {
-        case 'offer': handleOffer(msg.data); break;
-        case 'answer': handleAnswer(msg.data); break;
-        case 'ice': handleRemoteICE(msg.data); break;
-      }
-    });
-
     setInterval(updatePeerList, 1000);
 
     async function getLocalMediaStream() {
@@ -311,43 +376,6 @@
         terminal.innerText += "< " + input.value + "\n";
         input.value = "";
         terminal.scrollTop = terminal.scrollHeight;
-      }
-    }
-
-    function sendPublicMessage() {
-      const input = document.getElementById('publicChatInput');
-      const message = input.value.trim();
-      if (!message) return;
-      const payload = JSON.stringify({ from: peerId, text: message });
-
-      if (mqttConnected && publicChatSubscribed) {
-        client.publish(publicChatTopic, payload);
-      } else {
-        publicMessageQueue.push(payload);
-      }
-
-      publicOutput.textContent += `[me]: ${message}\n`;
-      publicOutput.scrollTop = publicOutput.scrollHeight;
-      input.value = "";
-    }
-
-    function checkEnter(e) {
-      if (e.key === "Enter") sendMessage();
-    }
-
-    function checkPublicEnter(e) {
-      if (e.key === "Enter") sendPublicMessage();
-    }
-
-    function togglePeerList() {
-      const peerList = document.getElementById("peerList");
-      const btn = document.getElementById("toggleBtn");
-      if (peerList.style.display === "none") {
-        peerList.style.display = "block";
-        btn.innerText = "H";
-      } else {
-        peerList.style.display = "none";
-        btn.innerText = "S";
       }
     }
   </script>
