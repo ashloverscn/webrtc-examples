@@ -165,7 +165,6 @@
         if (!err) {
           publicChatSubscribed = true;
           log("📡 Subscribed to PublicChat topic");
-          // Send any queued messages
           publicMessageQueue.forEach(msg => client.publish(publicChatTopic, msg));
           publicMessageQueue = [];
         }
@@ -180,15 +179,19 @@
 
     client.on('message', (t, payload) => {
       const msg = JSON.parse(payload.toString());
-      if (msg.type === 'presence') {
+
+      if (t === signalingTopic && msg.type === 'presence') {
         peerRegistry[msg.from] = Date.now();
         return;
       }
 
-      if (t === publicChatTopic && msg.text && msg.from) {
-        if (msg.from !== peerId) {
-          publicOutput.textContent += `[${msg.from}]: ${msg.text}\n`;
-          publicOutput.scrollTop = publicOutput.scrollHeight;
+      if (t === publicChatTopic) {
+        if (msg.type === 'presence') return; // ignore presence on public chat
+        if (msg.text && msg.from) {
+          if (msg.from !== peerId) {
+            publicOutput.textContent += `[${msg.from}]: ${msg.text}\n`;
+            publicOutput.scrollTop = publicOutput.scrollHeight;
+          }
         }
         return;
       }
