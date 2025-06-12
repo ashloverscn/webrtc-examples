@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Public Chat Terminal via MQTT Server</title>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <style>
+    pre {
+      background: #111;
+      color: #0f0;
+      padding: 10px;
+      height: 300px;
+      overflow-y: auto;
+      font-family: monospace;
+    }
+    #publicChatInput {
+      width: calc(100% - 80px);
+      margin-top: 5px;
+    }
+  </style>
+</head>
+<body>
+  <h3>Public Chat Terminal (MQTT Server)</h3>
+  <pre id="publicChatOutput"></pre>
+  <input type="text" id="publicChatInput" placeholder="Type a public message..." onkeydown="checkPublicEnter(event)">
+  <button onclick="sendPublicMessage()">Send</button>
+
+  <script>
+    const brokerURL = 'wss://e5122a5328ea4986a0295fa6e037655a.s2.eu.hivemq.cloud:8884/mqtt';
+    const publicChatTopic = 'PublicChat';
+    const peerId = localStorage.getItem('persistentPeerId') || 'peer_' + Math.random().toString(36).substr(2, 6);
+    localStorage.setItem('persistentPeerId', peerId);
+
+    let mqttConnected = false;
+    let publicChatSubscribed = false;
+    let publicMessageQueue = [];
+
+    const publicOutput = document.getElementById('publicChatOutput');
+
+    const client = mqtt.connect(brokerURL, {
+      rejectUnauthorized: false,
+      clientId: 'chat_' + peerId,
+      username: 'admin',
+      password: 'admin1234S',
+      protocol: 'wss'
+    });
+
+    client.on('connect', () => {
+      mqttConnected = true;
+      client.subscribe(publicChatTopic, {}, (err) => {
+        if (!err) {
+          publicChatSubscribed = true;
+          publicMessageQueue.forEach(msg => client.publish(publicChatTopic, msg));
+          publicMessageQueue = [];
+        }
+      });
+    });
+
+    client.on('message', (t, payload) => {
+      if (t === publicChatTopic) {
+        const msg = JSON.parse(payload.toString());
+        if (msg.text && msg.from && msg.from !== peerId) {
+          publicOutput.textContent += `[${msg.from}]: ${msg.text}\n`;
+          publicOutput.scrollTop = publicOutput.scrollHeight;
+        }
+      }
+    });
+
+    function sendPublicMessage() {
+      const input = document.getElementById('publicChatInput');
+      const message = input.value.trim();
+      if (!message) return;
+      const payload = JSON.stringify({ from: peerId, text: message });
+
+      if (mqttConnected && publicChatSubscribed) {
+        client.publish(publicChatTopic, payload);
+      } else {
+        publicMessageQueue.push(payload);
+      }
+
+      publicOutput.textContent += `[me]: ${message}\n`;
+      publicOutput.scrollTop = publicOutput.scrollHeight;
+      input.value = "";
+    }
+
+    function checkPublicEnter(e) {
+      if (e.key === "Enter") sendPublicMessage();
+    }
+  </script>
+</body>
+</html>
