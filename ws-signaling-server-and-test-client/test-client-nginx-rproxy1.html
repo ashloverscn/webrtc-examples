@@ -13,7 +13,8 @@
       document.getElementById('log').textContent += msg + '\n';
     };
 
-    const serverUrl = 'wss://192.168.29.9/ws/';
+    //const serverUrl = 'wss://192.168.29.9/ws/';
+    const serverUrl = 'wss://ash-temp-new-27782.portmap.io:27782/ws/';
     const ws = new WebSocket(serverUrl);
 
     ws.addEventListener('open', () => {
