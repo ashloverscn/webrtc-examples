@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Public Chat Terminal via WebSocket</title>
+  <style>
+    pre {
+      background: #111;
+      color: #0f0;
+      padding: 10px;
+      height: 300px;
+      overflow-y: auto;
+      font-family: monospace;
+    }
+    #publicChatInput {
+      width: calc(100% - 80px);
+      margin-top: 5px;
+    }
+    #peers {
+      background: #222;
+      color: #0ff;
+      padding: 10px;
+      font-family: monospace;
+      height: 100px;
+      overflow-y: auto;
+    }
+  </style>
+</head>
+<body>
+  <h3>Public Chat Terminal (WebSocket)</h3>
+  <div id="peers">Active Peers:</div>
+  <pre id="publicChatOutput"></pre>
+  <input type="text" id="publicChatInput" placeholder="Type a public message..." onkeydown="checkPublicEnter(event)">
+  <button onclick="sendPublicMessage()">Send</button>
+
+  <script>
+    const wsURL = 'wss://ash-temp-new-27782.portmap.io:27782/ws/';
+    const peerId = localStorage.getItem('persistentPeerId') || 'peer_' + Math.random().toString(36).substr(2, 6);
+    localStorage.setItem('persistentPeerId', peerId);
+
+    let ws;
+    let messageBuffer = [];
+    let activePeers = new Set();
+
+    const publicOutput = document.getElementById('publicChatOutput');
+    const peersOutput = document.getElementById('peers');
+
+    function connectWebSocket() {
+      ws = new WebSocket(wsURL);
+
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ type: "presence", status: "join", from: peerId }));
+        displayMessages();
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+
+          if (msg.type === "presence") {
+            if (msg.status === "join") activePeers.add(msg.from);
+            if (msg.status === "leave") activePeers.delete(msg.from);
+            updatePeers();
+          }
+
+          if (msg.type === "chat") {
+            if (!msg.text || !msg.from || !msg.timestamp) return;
+            if (!messageBuffer.some(m => m.timestamp === msg.timestamp)) {
+              messageBuffer.push(msg);
+              if (messageBuffer.length > 1008) messageBuffer.shift();
+              displayMessages();
+            }
+          }
+        } catch (e) {}
+      };
+
+      ws.onclose = () => {
+        setTimeout(connectWebSocket, 3000);
+      };
+
+      ws.onerror = () => {
+        ws.close();
+      };
+    }
+
+    function sendPublicMessage() {
+      const input = document.getElementById('publicChatInput');
+      const message = input.value.trim();
+      if (!message || ws.readyState !== WebSocket.OPEN) return;
+
+      const msgObj = {
+        type: "chat",
+        from: peerId,
+        text: message,
+        timestamp: Date.now()
+      };
+      ws.send(JSON.stringify(msgObj));
+      messageBuffer.push(msgObj);
+      if (messageBuffer.length > 1008) messageBuffer.shift();
+      displayMessages();
+      input.value = "";
+    }
+
+    function displayMessages() {
+      const sorted = messageBuffer.slice().sort((a, b) => a.timestamp - b.timestamp);
+      publicOutput.textContent = "";
+      sorted.forEach(m => {
+        const prefix = m.from === peerId ? "[me]" : `[${m.from}]`;
+        publicOutput.textContent += `${prefix}: ${m.text}\n`;
+      });
+      publicOutput.scrollTop = publicOutput.scrollHeight;
+    }
+
+    function updatePeers() {
+      peersOutput.textContent = "Active Peers:\n" + Array.from(activePeers).join("\n");
+    }
+
+    function checkPublicEnter(e) {
+      if (e.key === "Enter") sendPublicMessage();
+    }
+
+    window.addEventListener('beforeunload', () => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "presence", status: "leave", from: peerId }));
+      }
+    });
+
+    connectWebSocket();
+  </script>
+</body>
+</html>
