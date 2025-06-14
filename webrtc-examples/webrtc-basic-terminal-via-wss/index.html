@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>WebRTC Serial Terminal via WSS</title>
+  <style>
+    pre { background: #111; color: #0f0; padding: 10px; height: 200px; overflow-y: scroll; }
+    #peerList {
+      background: #222; color: #ccc; padding: 10px; margin-top: 10px;
+      border: 1px solid #444; border-radius: 5px;
+    }
+    #peerList ul { list-style: none; padding-left: 0; }
+    #peerList li { cursor: pointer; margin-bottom: 5px; }
+    #peerList li:hover { text-decoration: underline; }
+    #peerList li.me { color: #888; cursor: default; user-select: none; }
+    #peerList li.offline { color: #555; font-style: italic; }
+  </style>
+</head>
+<body>
+  <h2>WebRTC Serial Terminal (WSS Signaling)</h2>
+
+  <div id="peerList">
+    <strong>Active Peers:</strong>
+    <ul id="peers"></ul>
+  </div>
+
+  <h3>Terminal Output</h3>
+  <pre id="terminalOutput"></pre>
+
+  <input type="text" id="inputField" placeholder="Type a command..." onkeydown="checkEnter(event)">
+  <button onclick="sendMessage()">Send</button>
+
+  <script>
+    const serverUrl = 'wss://ash-temp-new-27782.portmap.io:27782/ws/';
+    const peerId = 'peer_' + Math.random().toString(36).substr(2, 6);
+    let targetPeerId = '';
+    let pc, dc;
+    const peerRegistry = {};
+    const terminal = document.getElementById('terminalOutput');
+
+    function log(msg) {
+      terminal.innerText += msg + "\n";
+      terminal.scrollTop = terminal.scrollHeight;
+    }
+
+    function updatePeerList() {
+      const now = Date.now();
+      const ul = document.getElementById('peers');
+      ul.innerHTML = '';
+      for (const pid in peerRegistry) {
+        const lastSeen = peerRegistry[pid];
+        const isOffline = now - lastSeen > 1000;
+        const isExpired = now - lastSeen > 5000;
+
+        if (isExpired) {
+          delete peerRegistry[pid];
+          continue;
+        }
+
+        const li = document.createElement('li');
+        if (pid === peerId) {
+          li.className = 'me';
+          li.innerHTML = `[me]:${pid}`;
+        } else if (isOffline) {
+          li.className = 'offline';
+          li.textContent = `[disconnected]:${pid}`;
+        } else {
+          li.textContent = `[online]:${pid}`;
+          li.onclick = () => {
+            document.getElementById('inputField').focus();
+            targetPeerId = pid;
+            initiateCall();
+          };
+        }
+        ul.appendChild(li);
+      }
+    }
+
+    const ws = new WebSocket(serverUrl);
+
+    ws.onopen = () => {
+      log(`✅ Connected to WSS as ${peerId}`);
+      sendWSS({ type: 'presence', from: peerId });
+      setInterval(() => {
+        sendWSS({ type: 'presence', from: peerId });
+      }, 1000);
+    };
+
+    ws.onmessage = (event) => {
+      let msg;
+      try {
+        msg = JSON.parse(event.data);
+      } catch (e) {
+        log("⚠️ Invalid message format");
+        return;
+      }
+
+      if (msg.type === 'presence') {
+        peerRegistry[msg.from] = Date.now();
+        return;
+      }
+
+      if (msg.to !== peerId) return;
+
+      log(`📥 ${msg.type.toUpperCase()} from ${msg.from}`);
+      targetPeerId = msg.from;
+
+      switch (msg.type) {
+        case 'offer':
+          handleOffer(msg.data);
+          break;
+        case 'answer':
+          handleAnswer(msg.data);
+          break;
+        case 'ice':
+          handleRemoteICE(msg.data);
+          break;
+      }
+    };
+
+    ws.onerror = (err) => log('❌ WSS Error');
+    ws.onclose = () => log('⛔ WSS Connection closed');
+
+    function sendWSS(payload) {
+      ws.send(JSON.stringify(payload));
+    }
+
+    function sendSignal(type, data) {
+      if (!targetPeerId) return log('⚠️ Select a peer first.');
+      const payload = {
+        type,
+        from: peerId,
+        to: targetPeerId,
+        data,
+      };
+      sendWSS(payload);
+      log(`📤 Sent ${type.toUpperCase()} to ${targetPeerId}`);
+    }
+
+    setInterval(updatePeerList, 1000);
+
+    async function setupPeerConnection(isOfferer) {
+      pc = new RTCPeerConnection({
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+      });
+
+      if (isOfferer) {
+        dc = pc.createDataChannel("serial");
+        setupDataChannel();
+      }
+
+      pc.ondatachannel = event => {
+        dc = event.channel;
+        setupDataChannel();
+      };
+
+      pc.onicecandidate = e => {
+        if (e.candidate) sendSignal('ice', e.candidate);
+      };
+
+      const offer = isOfferer ? await pc.createOffer() : null;
+      if (offer) {
+        await pc.setLocalDescription(offer);
+        sendSignal('offer', offer);
+      }
+    }
+
+    async function initiateCall() {
+      await setupPeerConnection(true);
+    }
+
+    async function handleOffer(offer) {
+      await setupPeerConnection(false);
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      sendSignal('answer', answer);
+    }
+
+    async function handleAnswer(answer) {
+      await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    }
+
+    function handleRemoteICE(candidate) {
+      pc.addIceCandidate(new RTCIceCandidate(candidate));
+    }
+
+    function setupDataChannel() {
+      dc.onopen = () => log("=== DataChannel Opened ===");
+      dc.onclose = () => log("=== DataChannel Closed ===");
+      dc.onmessage = event => {
+        log("> " + event.data);
+      };
+    }
+
+    function sendMessage() {
+      const input = document.getElementById('inputField');
+      if (dc && dc.readyState === "open") {
+        dc.send(input.value);
+        log("< " + input.value);
+        input.value = "";
+      } else {
+        log("⚠️ DataChannel not open.");
+      }
+    }
+
+    function checkEnter(e) {
+      if (e.key === "Enter") sendMessage();
+    }
+  </script>
+</body>
+</html>
