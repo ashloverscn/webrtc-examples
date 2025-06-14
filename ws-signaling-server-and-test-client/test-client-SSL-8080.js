@@ -1,6 +1,6 @@
 const WebSocket = require('ws');
 
-const serverUrl = 'wss://192.168.29.117:8080';
+const serverUrl = 'wss://192.168.29.9:8080';
 let ws;
 let reconnectInterval = 5000; // ms
 
