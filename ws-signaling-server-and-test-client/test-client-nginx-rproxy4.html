@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WebSocket Dual Client Simulation</title>
+</head>
+<body>
+  <h1>WebSocket Simulation: ClientA & ClientB</h1>
+  <pre id="log"></pre>
+
+  <script>
+    const serverUrl = 'wss://192.168.29.9/ws/';
+    const logEl = document.getElementById('log');
+
+    const log = (msg) => {
+      console.log(msg);
+      logEl.textContent += msg + '\n';
+    };
+
+    const delay = (ms) => new Promise(res => setTimeout(res, ms));
+
+    function createClient(name) {
+      const ws = new WebSocket(serverUrl);
+
+      ws.name = name;
+
+      ws.addEventListener('open', async () => {
+        log(`[${name}] Connected`);
+
+        if (name === 'ClientA') {
+          await delay(1000);
+          const offer = {
+            type: 'offer',
+            from: 'ClientA',
+            to: 'ClientB',
+            sdp: 'v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\n...dummy-offer...'
+          };
+          log(`[${name}] ➜ Sending OFFER`);
+          ws.send(JSON.stringify(offer));
+        }
+
+        await delay(3000);
+        const candidate = {
+          type: 'candidate',
+          from: name,
+          to: name === 'ClientA' ? 'ClientB' : 'ClientA',
+          candidate: 'candidate:1 1 UDP 2122252543 192.168.1.2 3478 typ host'
+        };
+        log(`[${name}] ➜ Sending ICE Candidate`);
+        ws.send(JSON.stringify(candidate));
+
+        await delay(5000);
+        const bye = {
+          type: 'bye',
+          from: name,
+          to: name === 'ClientA' ? 'ClientB' : 'ClientA'
+        };
+        log(`[${name}] ➜ Sending BYE`);
+        ws.send(JSON.stringify(bye));
+      });
+
+      ws.addEventListener('message', (event) => {
+        let data;
+        try {
+          data = JSON.parse(event.data);
+        } catch {
+          log(`[${name}] ⬅ Invalid message: ${event.data}`);
+          return;
+        }
+
+        if (data.to !== name) return;
+
+        if (data.type === 'offer') {
+          log(`[${name}] ⬅ Received OFFER`);
+          const answer = {
+            type: 'answer',
+            from: name,
+            to: data.from,
+            sdp: 'v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\n...dummy-answer...'
+          };
+          log(`[${name}] ➜ Sending ANSWER`);
+          ws.send(JSON.stringify(answer));
+        } else if (data.type === 'answer') {
+          log(`[${name}] ⬅ Received ANSWER`);
+        } else if (data.type === 'candidate') {
+          log(`[${name}] ⬅ Received ICE Candidate`);
+        } else if (data.type === 'bye') {
+          log(`[${name}] ⬅ Received BYE`);
+        } else {
+          log(`[${name}] ⬅ Unknown message: ${JSON.stringify(data)}`);
+        }
+      });
+
+      ws.addEventListener('close', () => log(`[${name}] Connection closed`));
+      ws.addEventListener('error', (err) => log(`[${name}] Error occurred`));
+    }
+
+    // Start both clients
+    createClient('ClientA');
+    setTimeout(() => createClient('ClientB'), 500); // Simulate later join
+  </script>
+</body>
+</html>

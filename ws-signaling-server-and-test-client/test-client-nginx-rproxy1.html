@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WebSocket WSS Client</title>
+</head>
+<body>
+  <h1>WebSocket WSS Client</h1>
+  <pre id="log"></pre>
+
+  <script>
+    const log = (msg) => {
+      console.log(msg);
+      document.getElementById('log').textContent += msg + '\n';
+    };
+
+    const serverUrl = 'wss://192.168.29.9/ws/';
+    const ws = new WebSocket(serverUrl);
+
+    ws.addEventListener('open', () => {
+      log('Connected to WSS via NGINX');
+
+      const message = {
+        type: 'offer',
+        sdp: 'dummy sdp data',
+        from: 'client1'
+      };
+      ws.send(JSON.stringify(message));
+    });
+
+    ws.addEventListener('message', (event) => {
+      log('Received: ' + event.data);
+    });
+
+    ws.addEventListener('error', (event) => {
+      log('WSS error: ' + JSON.stringify(event));
+    });
+
+    ws.addEventListener('close', () => {
+      log('Disconnected from WSS');
+    });
+  </script>
+</body>
+</html>

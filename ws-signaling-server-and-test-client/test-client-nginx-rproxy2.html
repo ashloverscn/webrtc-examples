@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Browser WebSocket Client</title>
+</head>
+<body>
+  <h1>WebSocket Client</h1>
+  <pre id="log"></pre>
+
+  <script>
+    const serverUrl = 'ws://192.168.29.9:8080';
+    let ws;
+    let reconnectInterval = 5000; // ms
+    let pingInterval;
+
+    const log = (msg) => {
+      console.log(msg);
+      document.getElementById('log').textContent += msg + '\n';
+    };
+
+    function connect() {
+      ws = new WebSocket(serverUrl);
+
+      ws.addEventListener('open', () => {
+        log('[*] Connected to signaling server.');
+
+        sendMessage({
+          type: 'offer',
+          sdp: 'dummy sdp offer data',
+          from: 'client1'
+        });
+
+        setTimeout(() => {
+          sendMessage({
+            type: 'candidate',
+            candidate: 'dummy ice candidate',
+            from: 'client1'
+          });
+        }, 3000);
+
+        setTimeout(() => {
+          sendMessage({
+            type: 'answer',
+            sdp: 'dummy sdp answer data',
+            from: 'client1'
+          });
+        }, 6000);
+
+        pingInterval = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            sendMessage({ type: 'ping', from: 'client1' }); // simulate ping
+            log('[*] Sent ping');
+          } else {
+            clearInterval(pingInterval);
+          }
+        }, 25000);
+      });
+
+      ws.addEventListener('message', (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          log('[<-] Received: ' + JSON.stringify(message));
+        } catch (err) {
+          log('[!] Non-JSON message: ' + event.data);
+        }
+      });
+
+      ws.addEventListener('close', () => {
+        log('[*] Connection closed. Reconnecting in 5 seconds...');
+        clearInterval(pingInterval);
+        setTimeout(connect, reconnectInterval);
+      });
+
+      ws.addEventListener('error', (err) => {
+        log('[!] WebSocket error');
+      });
+    }
+
+    function sendMessage(msg) {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(msg));
+        log('[->] Sent: ' + JSON.stringify(msg));
+      } else {
+        log('[!] Cannot send message, connection not open');
+      }
+    }
+
+    connect();
+  </script>
+</body>
+</html>

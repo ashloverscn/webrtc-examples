@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WSS WebSocket Client</title>
+</head>
+<body>
+  <h1>Secure WebSocket Client (WSS)</h1>
+  <pre id="log"></pre>
+
+  <script>
+    const serverUrl = 'wss://192.168.29.9/ws/'; // Adjust for your actual WSS address
+    const logEl = document.getElementById('log');
+
+    const log = (msg) => {
+      console.log(msg);
+      logEl.textContent += msg + '\n';
+    };
+
+    const ws = new WebSocket(serverUrl);
+
+    ws.addEventListener('open', () => {
+      log('[✔] Connected to secure signaling server via WSS');
+
+      setTimeout(() => {
+        const offer = {
+          type: 'offer',
+          sdp: 'v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\n...',
+          from: 'clientA'
+        };
+        log('[↑] Sending OFFER...');
+        ws.send(JSON.stringify(offer));
+      }, 1000);
+
+      setTimeout(() => {
+        const candidate = {
+          type: 'candidate',
+          candidate: 'candidate:1 1 UDP 2122252543 192.168.29.10 53705 typ host',
+          from: 'clientA'
+        };
+        log('[↑] Sending ICE Candidate...');
+        ws.send(JSON.stringify(candidate));
+      }, 2500);
+
+      setTimeout(() => {
+        const ping = {
+          type: 'ping',
+          time: Date.now(),
+          from: 'clientA'
+        };
+        log('[↑] Sending PING...');
+        ws.send(JSON.stringify(ping));
+      }, 4000);
+    });
+
+    ws.addEventListener('message', (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        log(`[↓] Received: ${msg.type || 'UNKNOWN'} → ${JSON.stringify(msg)}`);
+      } catch (err) {
+        log('[!] Non-JSON message: ' + event.data);
+      }
+    });
+
+    ws.addEventListener('error', (event) => {
+      log('[✖] Connection error');
+    });
+
+    ws.addEventListener('close', () => {
+      log('[×] Connection closed by server');
+    });
+  </script>
+</body>
+</html>
