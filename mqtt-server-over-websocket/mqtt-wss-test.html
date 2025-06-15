@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>WSS MQTT Test</title>
+</head>
+<body>
+  <h2>Connecting to MQTT via WSS Proxy</h2>
+  <pre id="log">Connecting to broker...</pre>
+
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script>
+    const log = (msg) => {
+      document.getElementById('log').textContent += msg + '\n';
+    };
+
+    const client = mqtt.connect('wss://ash-temp-new-27782.portmap.io:27782/mqtt/');
+
+    client.on('connect', () => {
+      log('✅ Connected!');
+      client.subscribe('test/topic');
+      client.publish('test/topic', '🔔 Hello over WSS!');
+    });
+
+    client.on('message', (topic, message) => {
+      log(`📩 ${topic}: ${message.toString()}`);
+    });
+
+    client.on('error', (err) => {
+      log('❌ Error: ' + err.message);
+    });
+
+    client.on('close', () => {
+      log('🔌 Connection closed');
+    });
+  </script>
+</body>
+</html>

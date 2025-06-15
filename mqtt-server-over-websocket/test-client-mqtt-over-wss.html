@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>MQTT WSS Test</title>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <style>
+    body { font-family: sans-serif; background: #111; color: #0f0; padding: 20px; }
+    input, button { padding: 5px; margin: 5px; }
+    #log { white-space: pre-wrap; background: #000; padding: 10px; border: 1px solid #0f0; height: 300px; overflow-y: auto; }
+  </style>
+</head>
+<body>
+  <h2>MQTT over WSS Test (self-signed)</h2>
+
+  <div>
+    <label>Topic:</label>
+    <input type="text" id="topic" value="test/topic">
+    <label>Message:</label>
+    <input type="text" id="message" value="Hello MQTT">
+    <button onclick="publish()">Publish</button>
+  </div>
+
+  <div id="log">Connecting...</div>
+
+  <script>
+    const log = msg => {
+      const l = document.getElementById('log');
+      l.textContent += `\n${msg}`;
+      l.scrollTop = l.scrollHeight;
+    };
+
+    const client = mqtt.connect('wss://ash-temp-new-27782.portmap.io:27782/mqtt/', {
+      clientId: "webclient-" + Math.random().toString(16).substr(2, 8),
+      rejectUnauthorized: false
+    });
+
+    client.on('connect', () => {
+      log('✅ Connected to MQTT over WSS');
+      client.subscribe('test/topic', err => {
+        if (err) log('❌ Subscribe failed: ' + err.message);
+        else log('📡 Subscribed to test/topic');
+      });
+    });
+
+    client.on('error', err => {
+      log('❌ Connection error: ' + err.message);
+    });
+
+    client.on('message', (topic, message) => {
+      log(`📥 [${topic}]: ${message.toString()}`);
+    });
+
+    client.on('close', () => {
+      log('🔌 Connection closed');
+    });
+
+    function publish() {
+      const topic = document.getElementById('topic').value;
+      const message = document.getElementById('message').value;
+      client.publish(topic, message);
+      log(`📤 Published "${message}" to "${topic}"`);
+    }
+  </script>
+</body>
+</html>
