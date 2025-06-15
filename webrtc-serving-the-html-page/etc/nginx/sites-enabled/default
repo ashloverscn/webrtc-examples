@@ -41,4 +41,17 @@ server {
         proxy_cache_bypass $http_upgrade;
     }
 
+
+
+    # MQTT over WebSocket proxy at /mqtt/
+    location /mqtt/ {
+        proxy_pass http://127.0.0.1:9001/;
+        proxy_http_version 1.1;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+
 }
