@@ -1,0 +1,14 @@
+[Unit]
+Description=WebSocket Signaling Server (Node.js)
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/node /var/www/html/ws-signaling-server-and-test-client/signaling-server-nginx-rproxy1.js
+WorkingDirectory=/var/www/html/ws-signaling-server-and-test-client
+Restart=always
+RestartSec=5
+User=root
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
