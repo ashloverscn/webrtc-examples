@@ -1,0 +1,69 @@
+# openvpn setup on raspberrypi
+sudo apt update && sudo apt install openvpn # (Ubuntu and Debian)
+sudo dnf install openvpn     # (Fedora)
+sudo zypper install openvpn  # (openSUSE)
+
+# copy config files to the location (this ovpn file iS from http://portmap.io)
+sudo mkdir -p /etc/openvpn/server
+sudo mkdir -p /etc/openvpn/client
+sudo cp ~/ash-temp-new.serrver.ovpn /etc/openvpn/client/ash-temp-new.serrver.ovpn.conf
+
+# enable 
+sudo systemctl enable openvpn-client@ash-temp-new.serrver.ovpn
+#sudo systemctl start openvpn-client@ash-temp-new.serrver.ovpn
+sudo systemctl restart openvpn-client@ash-temp-new.serrver.ovpn
+sudo systemctl status openvpn-client@ash-temp-new.serrver.ovpn
+#journalctl -u openvpn-client@ash-temp-new.serrver -xe
+
+########################## manually create systemd unitd file ##########################
+#############################################################
+# default systemd unitd file
+#
+# This service is actually a systemd target,
+# but we are using a service since targets cannot be reloaded.
+
+[Unit]
+Description=OpenVPN service
+After=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+WorkingDirectory=/etc/openvpn
+
+[Install]
+WantedBy=multi-user.target
+
+#############################################################
+# custom systemd unitd file with conf loading at startup
+#
+# This service is actually a systemd target,
+# but we are using a service since targets cannot be reloaded.
+
+[Unit]
+Description=OpenVPN client service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/openvpn --config /etc/openvpn/client/ash-temp-new.serrver.ovpn.conf
+Restart=on-failure
+RestartSec=5
+WorkingDirectory=/etc/openvpn
+
+[Install]
+WantedBy=multi-user.target
+
+##################################################################
+# copy config files to the location
+sudo mkdir -p /etc/openvpn/server
+sudo mkdir -p /etc/openvpn/client
+sudo cp ~/ash-temp-new.serrver.ovpn /etc/openvpn/client/ash-temp-new.serrver.ovpn.conf
+
+# enable 
+sudo systemctl enable openvpn.service
+#sudo systemctl start openvpn.service
+sudo systemctl restart openvpn.service
+sudo systemctl status openvpn.service
+#journalctl -u openvpn.service -xe
