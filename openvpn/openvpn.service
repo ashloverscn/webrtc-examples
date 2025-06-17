@@ -1,0 +1,16 @@
+# This service is actually a systemd target,
+# but we are using a service since targets cannot be reloaded.
+
+[Unit]
+Description=OpenVPN client service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/openvpn --config /etc/openvpn/client/ash-temp-new.serrver.ovpn.conf
+Restart=on-failure
+RestartSec=5
+WorkingDirectory=/etc/openvpn
+
+[Install]
+WantedBy=multi-user.target
