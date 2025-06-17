@@ -1,0 +1,136 @@
+# Setup mediamtx on raspberry pi 3b +
+https://james-batchelor.com/index.php/2023/11/10/install-mediamtx-on-raspbian-bookworm/
+https://github.com/bluenviron/mediamtx
+https://snapcraft.io/install/mediamtx/raspbian
+
+# increse gpu memory slightly to avoid from getting stuck
+sudo sed -i 's/^gpu_mem=.*/gpu_mem=256/' /boot/config.txt
+
+#####################################################################################################
+# go to the latest release page https://github.com/bluenviron/mediamtx/releases
+# this is the latest right now at this time
+cd /usr/src/
+sudo pkill -9 mediamtx
+sudo rm -rf ./mediamtx*
+sudo wget https://github.com/bluenviron/mediamtx/releases/download/v1.12.3/mediamtx_v1.12.3_linux_arm64.tar.gz
+sudo tar xzvf ./mediamtx_v1.12.3_linux_arm64.tar.gz
+sudo \cp -r ./mediamtx /usr/local/bin/
+sudo chmod +x /usr/local/bin/mediamtx
+sudo rm -rf ./mediamtx*
+# make the config directory for mediamtx in etc
+sudo mkdir -p /etc/mediamtx/
+cd /etc/mediamtx/
+sudo rm -rf mediamtx-rpi.yml
+sudo wget https://github.com/ashloverscn/Python-Examples-Misc/raw/refs/heads/main/mediamtx-rpi.yml
+sudo mv -f ./mediamtx-rpi.yml ./mediamtx.yml
+# generate the certificateS and give permission to them 
+sudo rm -rf ./server.*
+sudo openssl req -x509 -nodes -newkey rsa:2048 -keyout server.key -out server.crt -days 365 -subj "/CN=localhost"
+sudo chown root:root ./server.crt
+sudo chmod 600 ./server.key
+# get unitd file for systemd startup
+cd /etc/systemd/system/
+sudo rm -rf ./mediamtx.service
+sudo wget https://github.com/ashloverscn/Python-Examples-Misc/raw/refs/heads/main/mediamtx.service
+sudo chown root:root mediamtx.service
+sudo systemctl disable mediamtx.service
+sudo systemctl enable mediamtx.service
+sudo systemctl restart mediamtx.service
+sudo systemctl status mediamtx.service
+cd ~/
+
+#######################################################################################
+# create unitd file for systemd startup
+[Unit]
+Description=MediaMTX RTSP Server
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/mediamtx /etc/mediamtx/mediamtx.yml
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target
+
+#
+# configuration dir for /opt/mediamtx/mediamtx.yml
+
+sudo apt install ffmpeg -y
+
+# Stream a test Signal
+ffmpeg -re -f lavfi -i testsrc=size=640x480:rate=30 \
+       -vcodec libx264 -preset veryfast -tune zerolatency \
+       -f rtsp rtsp://localhost:8554/teststream
+
+# Stream this test Signal if it takes a little longer than streaming raspi cam
+ffmpeg -re -f lavfi -i testsrc=size=640x480:rate=30 \
+-vcodec libx264 -preset ultrafast -tune zerolatency \
+-x264-params keyint=30:min-keyint=30:scenecut=0 -g 30 \
+-pix_fmt yuv420p -profile:v baseline -level 3.0 \
+-f rtsp rtsp://localhost:8554/teststream
+
+# Stream raspi cam
+# 640 x 480
+libcamera-vid -t 0 --inline --framerate 30 --width 640 --height 480 -o - | \
+ffmpeg -re -f h264 -i - \
+    -vcodec copy \
+    -f rtsp rtsp://localhost:8554/teststream
+
+# 1280 x 720
+libcamera-vid -t 0 --inline --framerate 30 --width 1280 --height 720 -o - | \
+ffmpeg -re -f h264 -i - \
+    -vcodec copy \
+    -f rtsp rtsp://localhost:8554/teststream
+
+# read a Stream from url and write back the Stream to localhost mediamtx Server on a publish topic 
+# (any topic you set becomes equally available on all the channels parallaly of the mediamtx Server)
+
+# reading from remote camera and writing Stream to localhost mediamtx Server
+ffmpeg -rtsp_transport tcp -i rtsp://admin:admin@192.168.29.141:5543/live/channel0 -c copy -f rtsp rtsp://localhost:8554/camera
+
+# Stream windowS desktop to mediamtx Server
+ffmpeg -f gdigrab -framerate 25 -i desktop -vcodec libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -f rtsp rtsp://raspberrypi:8554/ashpc
+
+# get device list first (your device name might vary)
+ffmpeg -list_devices true -f dshow -i dummy
+# Stream windowS webcam to mediamtx Server
+ffmpeg -f dshow -i video="Integrated Webcam" -vcodec libx264 -f rtsp rtsp://raspberrypi-lan:8554/webcam
+# if RealTime Buffer is overflowing 
+ffmpeg -f dshow -rtbufsize 128M -i video="Integrated Webcam" -vcodec libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p -profile:v baseline -level 3.0 -f rtsp rtsp://raspberrypi-lan:8554/webcam
+# if the codec is laggy
+ffmpeg -f dshow -framerate 30 -video_size 640x480 -rtbufsize 128M -i video="Integrated Webcam" -vcodec libx264 -preset ultrafast -tune zerolatency -x264-params keyint=30:min-keyint=30:scenecut=0 -g 30 -pix_fmt yuv420p -profile:v baseline -level 3.0 -f rtsp rtsp://raspberrypi-lan:8554/webcam
+# feel free to broadcast a test signal :P
+ffmpeg -re -f lavfi -i testsrc=size=640x480:rate=30 -vcodec libx264 -preset ultrafast -tune zerolatency -x264-params keyint=30:min-keyint=30:scenecut=0 -g 30 -pix_fmt yuv420p -profile:v baseline -level 3.0 -f rtsp rtsp://raspberrypi-lan:8554/webcam
+
+# read and write the stream at Startup using mediamtx.yml file
+paths:
+  camera:
+    source: publisher
+    runOnInit: >
+      ffmpeg -rtsp_transport tcp -i rtsp://admin:admin@192.168.29.141:5543/live/channel0
+      -c copy -f rtsp rtsp://localhost:8554/camera
+    runOnInitRestart: yes
+
+# read and write the stream with wait untill feed available
+paths:
+  camera:
+    source: publisher
+    runOnInit: >
+      bash -c 'until ffmpeg -rtsp_transport tcp -i rtsp://admin:admin@192.168.29.141:5543/live/channel0
+      -c copy -f rtsp rtsp://localhost:8554/camera; do echo "Retrying..."; sleep 5; done'
+    runOnInitRestart: no
+
+# all parallal channels
+# Great! MediaMTX is now running successfully on your Raspberry Pi 3B with all major streaming protocols enabled:
+
+# RTSP: rtsp://raspberrypi:8554/
+
+# RTMP: rtmp://raspberrypi:1935/
+
+# HLS: http://raspberrypi:8888/
+
+# WebRTC: http://raspberrypi:8889/
+
+# SRT: srt://raspberrypi:8890
+
