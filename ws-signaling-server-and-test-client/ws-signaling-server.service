@@ -1,9 +1,9 @@
 [Unit]
-Description=WebSocket Signaling Server (Node.js)
+Description=WebSocket WS-Signaling Server (Node.js)
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/node /var/www/html/ws-signaling-server-and-test-client/signaling-server-nginx-rproxy1.js
+ExecStart=/usr/bin/node /var/www/html/ws-signaling-server-and-test-client/ws-signaling-server.js
 WorkingDirectory=/var/www/html/ws-signaling-server-and-test-client
 Restart=always
 RestartSec=5
