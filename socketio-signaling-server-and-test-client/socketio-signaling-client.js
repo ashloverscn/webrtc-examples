@@ -1,19 +1,19 @@
-const { io } = require('socket.io-client');
-const https = require('https');
+const { io } = require("socket.io-client");
+const https = require("https");
 
-// ⛔️ WARNING: This disables certificate verification
 const httpsAgent = new https.Agent({
-  rejectUnauthorized: false
+  rejectUnauthorized: false // Accept self-signed certificates
 });
 
 const socket = io("https://ash-temp-new-52546.portmap.io:52546", {
   transports: ["websocket"],
-  agent: httpsAgent, // 👈 important fix
+  agent: httpsAgent,
   reconnectionAttempts: 3,
   timeout: 5000
 });
 
 const ROOM = "testroom";
+let trackedPeerId = null;
 
 console.log("🔗 Connecting to signaling server...");
 
@@ -37,14 +37,28 @@ socket.on("connect", () => {
 
 socket.on("signal", ({ from, signalData }) => {
   console.log(`📥 Received signal from ${from}:`, signalData);
+  if (!trackedPeerId) {
+    trackedPeerId = from;
+    console.log(`📌 Tracking peer: ${trackedPeerId}`);
+  }
 });
 
 socket.on("peer-joined", (peerId) => {
   console.log(`👥 Peer joined: ${peerId}`);
+  trackedPeerId = peerId;
+  console.log(`📌 Tracking peer: ${trackedPeerId}`);
 });
 
 socket.on("peer-left", (peerId) => {
   console.log(`👋 Peer left: ${peerId}`);
+  if (peerId === trackedPeerId) {
+    console.log(`📡 Peer ${peerId} is now Offline ❌`);
+  }
+});
+
+socket.on("presence-response", ({ peerId, isOnline }) => {
+  const presence = isOnline ? "Online ✅" : "Offline ❌";
+  console.log(`📡 Presence of ${peerId}: ${presence}`);
 });
 
 socket.on("disconnect", () => {
@@ -54,3 +68,10 @@ socket.on("disconnect", () => {
 socket.on("connect_error", (err) => {
   console.error("❌ Connection error:", err.message);
 });
+
+// Periodically check presence of tracked peer
+setInterval(() => {
+  if (trackedPeerId) {
+    socket.emit("presence-check", trackedPeerId);
+  }
+}, 3000);
