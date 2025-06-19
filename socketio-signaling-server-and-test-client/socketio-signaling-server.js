@@ -2,46 +2,54 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 
+const PORT = process.env.PORT || 3000;
+const HOST = '0.0.0.0'; // Listen on all interfaces
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: "*" }
+  cors: { origin: "*" } // Relax CORS for testing; tighten later for production
 });
 
-// Optional health check route
-app.get('/health', (req, res) => res.send('✅ Server is alive'));
+// Optional health check endpoint
+app.get('/health', (req, res) => {
+  res.send('✅ Signaling server is alive');
+});
 
+// Event handling
 io.on('connection', (socket) => {
-  console.log(`🔌 New client connected: ${socket.id}`);
+  console.log(`🔌 Client connected: ${socket.id}`);
 
+  // Join a room
   socket.on('join', (room) => {
     socket.join(room);
     console.log(`🧑‍🤝‍🧑 ${socket.id} joined room: ${room}`);
+
+    // Notify others in the room
     socket.to(room).emit('peer-joined', socket.id);
   });
 
-  socket.on('signal', (data) => {
-    const { room, signalData, to } = data;
+  // Handle incoming signaling messages
+  socket.on('signal', ({ room, signalData, to }) => {
     if (to) {
-      io.to(to).emit('signal', {
-        from: socket.id,
-        signalData
-      });
-    } else {
-      socket.to(room).emit('signal', {
-        from: socket.id,
-        signalData
-      });
+      // Direct signaling to specific peer
+      io.to(to).emit('signal', { from: socket.id, signalData });
+      console.log(`📡 ${socket.id} ➡️ ${to} | signal:`, signalData?.type || '[object]');
+    } else if (room) {
+      // Broadcast to all in the room except sender
+      socket.to(room).emit('signal', { from: socket.id, signalData });
+      console.log(`📡 ${socket.id} 🕸 broadcast in ${room} |`, signalData?.type || '[object]');
     }
   });
 
+  // Clean up on disconnect
   socket.on('disconnect', () => {
-    console.log(`❌ Client disconnected: ${socket.id}`);
+    console.log(`❌ Disconnected: ${socket.id}`);
     socket.broadcast.emit('peer-left', socket.id);
   });
 });
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Signaling server running on http://0.0.0.0:${PORT}`);
+// Start server
+server.listen(PORT, HOST, () => {
+  console.log(`🚀 Signaling server running on http://${HOST}:${PORT}`);
 });
