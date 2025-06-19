@@ -100,6 +100,8 @@ server {
 }
 EOF
 
+sudo ln -s /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
+
 echo "=== Restarting NGINX..."
 sudo nginx -t && sudo systemctl restart nginx
 
