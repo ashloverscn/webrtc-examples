@@ -1,0 +1,14 @@
+[Unit]
+Description=WebSocket Socket.IO-Signaling Server (Node.js)
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/node /var/www/html/socketio-signaling-server-and-test-client/socketio-signaling-server.js
+WorkingDirectory=/var/www/html/socketio-signaling-server-and-test-client
+Restart=always
+RestartSec=5
+User=root
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
