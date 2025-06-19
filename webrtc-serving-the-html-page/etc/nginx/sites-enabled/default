@@ -42,7 +42,6 @@ server {
         proxy_cache_bypass $http_upgrade;
     }
 
-    # Socket.IO WebSocket proxy
     location /socket.io/ {
         proxy_pass http://localhost:3000/socket.io/;
         proxy_http_version 1.1;
