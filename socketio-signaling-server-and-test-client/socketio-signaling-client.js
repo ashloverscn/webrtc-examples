@@ -1,23 +1,27 @@
 const { io } = require('socket.io-client');
+const https = require('https');
 
-const SERVER_URL = "https://ash-temp-new-52546.portmap.io:52546"; // Update if needed
+// ⛔️ WARNING: This disables certificate verification
+const httpsAgent = new https.Agent({
+  rejectUnauthorized: false
+});
+
+const socket = io("https://ash-temp-new-52546.portmap.io:52546", {
+  transports: ["websocket"],
+  agent: httpsAgent, // 👈 important fix
+  reconnectionAttempts: 3,
+  timeout: 5000
+});
+
 const ROOM = "testroom";
 
 console.log("🔗 Connecting to signaling server...");
 
-const socket = io(SERVER_URL, {
-  transports: ["websocket"],
-  reconnectionAttempts: 3,
-  timeout: 5000,
-});
-
 socket.on("connect", () => {
   console.log(`✅ Connected as ${socket.id}`);
-  
   socket.emit("join", ROOM);
   console.log(`🚪 Joined room: ${ROOM}`);
 
-  // Send a test signal after 2 seconds
   setTimeout(() => {
     const testSignal = {
       type: "node-test-offer",
