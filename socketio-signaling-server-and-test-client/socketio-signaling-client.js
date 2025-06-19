@@ -1,78 +1,52 @@
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>WebRTC Signaling Auto-Test Client</title>
-</head>
-<body>
-  <h2>🔗 WebRTC Signaling Auto-Test Client</h2>
+const { io } = require('socket.io-client');
 
-  <p>Status: <span id="status">Connecting...</span></p>
-  <p>Your Socket ID: <span id="socket-id">N/A</span></p>
-  <p>Room: <strong>testroom</strong></p>
+const SERVER_URL = "https://ash-temp-new-52546.portmap.io:52546"; // Update if needed
+const ROOM = "testroom";
 
-  <hr>
+console.log("🔗 Connecting to signaling server...");
 
-  <pre id="log" style="background:#f0f0f0;padding:10px;max-height:300px;overflow:auto;border:1px solid #ccc;"></pre>
+const socket = io(SERVER_URL, {
+  transports: ["websocket"],
+  reconnectionAttempts: 3,
+  timeout: 5000,
+});
 
-  <!-- Load Socket.IO -->
-  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-  <script>
-    const room = "testroom";
-    const statusEl = document.getElementById("status");
-    const socketIdEl = document.getElementById("socket-id");
-    const logEl = document.getElementById("log");
+socket.on("connect", () => {
+  console.log(`✅ Connected as ${socket.id}`);
+  
+  socket.emit("join", ROOM);
+  console.log(`🚪 Joined room: ${ROOM}`);
 
-    function log(...args) {
-      logEl.textContent += args.map(a =>
-        typeof a === 'object' ? JSON.stringify(a, null, 2) : a
-      ).join(' ') + "\n";
-      logEl.scrollTop = logEl.scrollHeight;
-    }
-
-    const socket = io("https://ash-temp-new-52546.portmap.io:52546", {
-      transports: ["websocket"]
+  // Send a test signal after 2 seconds
+  setTimeout(() => {
+    const testSignal = {
+      type: "node-test-offer",
+      sdp: "this-is-a-dummy-sdp-from-node-client"
+    };
+    socket.emit("signal", {
+      room: ROOM,
+      signalData: testSignal
     });
+    console.log("📤 Sent test signal:", testSignal);
+  }, 2000);
+});
 
-    socket.on("connect", () => {
-      statusEl.textContent = "Connected ✅";
-      socketIdEl.textContent = socket.id;
-      log("✅ Connected as:", socket.id);
+socket.on("signal", ({ from, signalData }) => {
+  console.log(`📥 Received signal from ${from}:`, signalData);
+});
 
-      socket.emit("join", room);
-      log("🚪 Joined room:", room);
+socket.on("peer-joined", (peerId) => {
+  console.log(`👥 Peer joined: ${peerId}`);
+});
 
-      setTimeout(() => {
-        const fakeSignal = { type: "test-offer", sdp: "dummy sdp" };
-        socket.emit("signal", {
-          room,
-          signalData: fakeSignal
-        });
-        log("📤 Auto-sent test signal to room:", room, fakeSignal);
-      }, 1500);
-    });
+socket.on("peer-left", (peerId) => {
+  console.log(`👋 Peer left: ${peerId}`);
+});
 
-    socket.on("disconnect", () => {
-      statusEl.textContent = "Disconnected ❌";
-      log("❌ Disconnected from server");
-    });
+socket.on("disconnect", () => {
+  console.log("❌ Disconnected from signaling server");
+});
 
-    socket.on("connect_error", (err) => {
-      statusEl.textContent = "Error ❌";
-      log("❌ Connection error:", err.message);
-    });
-
-    socket.on("peer-joined", (peerId) => {
-      log("👥 Peer joined:", peerId);
-    });
-
-    socket.on("peer-left", (peerId) => {
-      log("👋 Peer left:", peerId);
-    });
-
-    socket.on("signal", ({ from, signalData }) => {
-      log("📥 Signal received from", from, signalData);
-    });
-  </script>
-</body>
-</html>
+socket.on("connect_error", (err) => {
+  console.error("❌ Connection error:", err.message);
+});
