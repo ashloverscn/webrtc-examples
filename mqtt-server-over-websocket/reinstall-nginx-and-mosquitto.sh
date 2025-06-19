@@ -37,16 +37,13 @@ sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
 echo "=== Applying NGINX configuration..."
 
 sudo tee /etc/nginx/sites-available/default >/dev/null <<EOF
-# HTTP to HTTPS redirect
 server {
     listen 80 default_server;
     listen [::]:80 default_server;
     server_name localhost;
-
     return 301 https://\$host\$request_uri;
 }
 
-# HTTPS server block using cert.pem and key.pem
 server {
     listen 443 ssl http2 default_server;
     listen [::]:443 ssl http2 default_server;
@@ -64,10 +61,8 @@ server {
         autoindex on;
         autoindex_exact_size off;
         autoindex_localtime on;
-        index index.html index.htm;
     }
 
-    # WebSocket proxy at /ws/
     location /ws/ {
         proxy_pass http://127.0.0.1:8080/;
         proxy_http_version 1.1;
@@ -77,7 +72,6 @@ server {
         proxy_cache_bypass \$http_upgrade;
     }
 
-    # MQTT over WebSocket proxy at /mqtt/
     location /mqtt/ {
         proxy_pass http://127.0.0.1:9001/;
         proxy_http_version 1.1;
@@ -99,9 +93,10 @@ server {
 
     location /health {
         proxy_pass http://localhost:3000/health;
-    }
+    }    
 }
 EOF
+
 echo "=== Restarting NGINX..."
 sudo nginx -t && sudo systemctl restart nginx
 
