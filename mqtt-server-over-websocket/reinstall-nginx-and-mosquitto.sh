@@ -88,10 +88,10 @@ server {
     location /socket.io/ {
         proxy_pass http://localhost:3000/socket.io/;
         proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_cache_bypass $http_upgrade;
+        proxy_set_header Host \$host;
+        proxy_cache_bypass \$http_upgrade;
     }
 
     location /health {
@@ -100,7 +100,7 @@ server {
 }
 EOF
 
-sudo ln -s /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
+sudo ln -sf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default || true
 
 echo "=== Restarting NGINX..."
 sudo nginx -t && sudo systemctl restart nginx
