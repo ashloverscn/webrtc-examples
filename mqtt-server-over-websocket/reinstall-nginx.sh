@@ -103,6 +103,7 @@ server {
     location /health {
         proxy_pass http://localhost:3000/health;
     }
+
 }
 EOF
 
