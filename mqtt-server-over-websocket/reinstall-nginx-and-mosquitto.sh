@@ -13,7 +13,7 @@ sudo apt purge -y nginx nginx-common nginx-full \
   libnginx-mod-http-upstream-fair libnginx-mod-stream \
   libmaxminddb0
 
-echo "=== [2/6] Removing NGINX /etc/nginx configuration..."
+echo "=== Removing NGINX /etc/nginx configuration..."
 sudo rm -rf /etc/nginx
 
 sudo apt autoremove -y
