@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>WebRTC Signaling Test</title>
+</head>
+<body>
+  <h2>🔗 WebRTC Signaling Client</h2>
+
+  <p>Status: <span id="status">Disconnected</span></p>
+  <p>Your Socket ID: <span id="socket-id">N/A</span></p>
+
+  <label>
+    Room:
+    <input id="room" value="testroom" />
+    <button onclick="joinRoom()">Join Room</button>
+  </label>
+
+  <hr>
+
+  <label>
+    Peer Socket ID:
+    <input id="peerId" value="peer-1234" placeholder="Socket ID to send signal to" />
+  </label>
+  <br><br>
+
+  <label>
+    Signal Data (JSON):
+    <input id="signalData" 
+           value='{"type":"offer","sdp":"placeholder-sdp"}'
+           placeholder='e.g. {"type":"offer"}' 
+           style="width: 300px;" />
+    <button onclick="sendSignal()">Send Signal</button>
+  </label>
+
+  <hr>
+
+  <pre id="log" style="background:#f0f0f0;padding:10px;max-height:300px;overflow:auto;border:1px solid #ccc;"></pre>
+
+  <!-- Load Socket.IO from CDN -->
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <script>
+    const socket = io("http://192.168.29.9:3000", {
+      transports: ["websocket"]
+    });
+
+    const statusEl = document.getElementById("status");
+    const socketIdEl = document.getElementById("socket-id");
+    const logEl = document.getElementById("log");
+
+    function log(...args) {
+      logEl.textContent += args.map(a => typeof a === 'object' ? JSON.stringify(a, null, 2) : a).join(' ') + "\n";
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    socket.on("connect", () => {
+      statusEl.textContent = "Connected ✅";
+      socketIdEl.textContent = socket.id;
+      log("✅ Connected as:", socket.id);
+    });
+
+    socket.on("disconnect", () => {
+      statusEl.textContent = "Disconnected ❌";
+      log("❌ Disconnected from server");
+    });
+
+    socket.on("connect_error", (err) => {
+      log("❌ Connection error:", err.message);
+    });
+
+    function joinRoom() {
+      const room = document.getElementById("room").value.trim();
+      if (room) {
+        socket.emit("join", room);
+        log("🚪 Joined room:", room);
+      }
+    }
+
+    function sendSignal() {
+      const to = document.getElementById("peerId").value.trim();
+      const rawSignal = document.getElementById("signalData").value.trim();
+      try {
+        const signalData = JSON.parse(rawSignal);
+        socket.emit("signal", { room: "", to, signalData });
+        log("📤 Sent signal to", to, signalData);
+      } catch (e) {
+        log("⚠️ Invalid JSON in signalData");
+      }
+    }
+
+    socket.on("peer-joined", (peerId) => {
+      log("👥 Peer joined:", peerId);
+    });
+
+    socket.on("peer-left", (peerId) => {
+      log("👋 Peer left:", peerId);
+    });
+
+    socket.on("signal", ({ from, signalData }) => {
+      log("📥 Signal received from", from, signalData);
+    });
+  </script>
+</body>
+</html>
