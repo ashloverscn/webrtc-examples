@@ -18,6 +18,9 @@ sudo apt purge -y nginx nginx-common nginx-full \
 sudo apt autoremove -y
 sudo apt clean
 
+echo "=== Removing NGINX /etc/nginx configuration..."
+sudo rm -rf /etc/nginx
+
 echo "=== Installing NGINX and all required modules..."
 
 sudo apt update
@@ -106,6 +109,8 @@ server {
 
 }
 EOF
+
+sudo ln -s /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
 
 echo "=== Restarting NGINX..."
 sudo nginx -t && sudo systemctl restart nginx
