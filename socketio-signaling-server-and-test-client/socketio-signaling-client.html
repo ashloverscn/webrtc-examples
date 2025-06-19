@@ -3,25 +3,41 @@
 <head>
   <meta charset="utf-8">
   <title>WebRTC Signaling Auto-Test Client</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; }
+    #log { background: #f0f0f0; padding: 10px; max-height: 300px; overflow: auto; border: 1px solid #ccc; }
+    .status-box { margin-bottom: 10px; }
+  </style>
 </head>
 <body>
   <h2>🔗 WebRTC Signaling Auto-Test Client</h2>
 
-  <p>Status: <span id="status">Connecting...</span></p>
-  <p>Your Socket ID: <span id="socket-id">N/A</span></p>
-  <p>Room: <strong>testroom</strong></p>
+  <div class="status-box">
+    <p>Status: <span id="status">Connecting...</span></p>
+    <p>Your Socket ID: <span id="socket-id">N/A</span></p>
+    <p>Room: <strong>testroom</strong></p>
+    <p>Tracked Peer: <span id="tracked-peer">None</span></p>
+    <p>Peer Presence: <span id="presence-status">Unknown</span></p>
+  </div>
 
   <hr>
 
-  <pre id="log" style="background:#f0f0f0;padding:10px;max-height:300px;overflow:auto;border:1px solid #ccc;"></pre>
+  <pre id="log"></pre>
 
-  <!-- Load Socket.IO -->
   <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
   <script>
     const room = "testroom";
+    const socket = io("https://ash-temp-new-52546.portmap.io:52546", {
+      transports: ["websocket"]
+    });
+
     const statusEl = document.getElementById("status");
     const socketIdEl = document.getElementById("socket-id");
     const logEl = document.getElementById("log");
+    const trackedPeerEl = document.getElementById("tracked-peer");
+    const presenceStatusEl = document.getElementById("presence-status");
+
+    let trackedPeerId = null;
 
     function log(...args) {
       logEl.textContent += args.map(a =>
@@ -29,10 +45,6 @@
       ).join(' ') + "\n";
       logEl.scrollTop = logEl.scrollHeight;
     }
-
-    const socket = io("https://ash-temp-new-52546.portmap.io:52546", {
-      transports: ["websocket"]
-    });
 
     socket.on("connect", () => {
       statusEl.textContent = "Connected ✅";
@@ -44,10 +56,7 @@
 
       setTimeout(() => {
         const fakeSignal = { type: "test-offer", sdp: "dummy sdp" };
-        socket.emit("signal", {
-          room,
-          signalData: fakeSignal
-        });
+        socket.emit("signal", { room, signalData: fakeSignal });
         log("📤 Auto-sent test signal to room:", room, fakeSignal);
       }, 1500);
     });
@@ -64,15 +73,39 @@
 
     socket.on("peer-joined", (peerId) => {
       log("👥 Peer joined:", peerId);
+      trackedPeerId = peerId;
+      trackedPeerEl.textContent = peerId;
     });
 
     socket.on("peer-left", (peerId) => {
       log("👋 Peer left:", peerId);
+      if (peerId === trackedPeerId) {
+        presenceStatusEl.textContent = "Offline ❌";
+      }
     });
 
     socket.on("signal", ({ from, signalData }) => {
       log("📥 Signal received from", from, signalData);
+      if (!trackedPeerId) {
+        trackedPeerId = from;
+        trackedPeerEl.textContent = from;
+      }
     });
+
+    socket.on("presence-response", ({ peerId, isOnline }) => {
+      if (peerId === trackedPeerId) {
+        presenceStatusEl.textContent = isOnline ? "Online ✅" : "Offline ❌";
+        log(`📡 Presence of ${peerId}: ${isOnline ? "Online" : "Offline"}`);
+      }
+    });
+
+    function checkPresence() {
+      if (trackedPeerId) {
+        socket.emit("presence-check", trackedPeerId);
+      }
+    }
+
+    setInterval(checkPresence, 3000);
   </script>
 </body>
 </html>
