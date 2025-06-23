@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>WebRTC Audio/Video + Public/Private Chat Terminal via Socket.IO</title>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <style>
+    .video-container {
+      display: flex;
+      gap: 10px;
+      margin-top: 20px;
+      flex-wrap: wrap;
+    }
+    .video-box {
+      flex: 1 1 45%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-width: 200px;
+    }
+    .video-box h3 {
+      margin: 0 0 5px 0;
+      text-align: center;
+      font-size: 1.1em;
+    }
+    video {
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      object-fit: cover;
+      border: 1px solid #ccc;
+      background: black;
+      max-width: 400px;
+    }
+    pre {
+      background: #111;
+      color: #0f0;
+      padding: 10px;
+      height: 200px;
+      overflow-y: auto;
+      font-family: monospace;
+    }
+    #inputField, #publicChatInput {
+      width: calc(100% - 80px);
+      margin-top: 5px;
+    }
+    #peerList {
+      background: #222; color: #ccc; padding: 10px; margin-top: 10px;
+      border: 1px solid #444; border-radius: 5px;
+    }
+    #peerList ul { list-style: none; padding-left: 0; }
+    #peerList li { cursor: pointer; margin-bottom: 5px; }
+    #peerList li:hover { text-decoration: underline; }
+    #peerList li.me { color: #888; cursor: default; user-select: none; text-decoration: none; }
+    #peerList li.offline { color: #555; font-style: italic; }
+    #toggleBtn {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      padding: 4px 8px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <button id="toggleBtn" onclick="togglePeerList()">H</button>
+
+  <h2>WebRTC Audio/Video Stream with Public/Private Chat Terminal (Socket.IO)</h2>
+
+  <div id="peerList">
+    <strong>Active Peers:</strong>
+    <ul id="peers"></ul>
+  </div>
+
+  <div class="video-container">
+    <div class="video-box">
+      <h3>Local Video</h3>
+      <video id="localVideo" autoplay muted playsinline></video>
+    </div>
+    <div class="video-box">
+      <h3>Remote Video</h3>
+      <video id="remoteVideo" autoplay playsinline></video>
+    </div>
+  </div>
+
+  <h3>Public Chat Terminal</h3>
+  <pre id="publicChatOutput"></pre>
+  <input type="text" id="publicChatInput" placeholder="Type a public message..." onkeydown="checkPublicEnter(event)">
+  <button onclick="sendPublicMessage()">Send</button>
+
+  <h3>Private Chat Terminal</h3>
+  <pre id="terminalOutput"></pre>
+  <input type="text" id="inputField" placeholder="Type a command..." onkeydown="checkEnter(event)">
+  <button onclick="sendMessage()">Send</button>
+
+  <script>
+    const socket = io("https://ash-temp-new-52546.portmap.io:52546");
+    const peerId = localStorage.getItem('peerId') || socket.id || 'peer_' + Math.random().toString(36).substring(2, 6);
+    localStorage.setItem('peerId', peerId);
+
+    let targetPeerId = '';
+    let pc, dc, localStream;
+    let messageBuffer = [];
+    const terminal = document.getElementById('terminalOutput');
+    const publicOutput = document.getElementById('publicChatOutput');
+    const peerRegistry = {};
+
+    function log(msg) {
+      terminal.innerText += msg + "\n";
+      terminal.scrollTop = terminal.scrollHeight;
+    }
+
+    socket.on('connect', () => {
+      log(`✅ Connected to signaling server as ${socket.id}`);
+      socket.emit('join', 'webrtc-room');
+      requestPeerList();
+      setInterval(() => socket.emit('list-peers'), 1000);
+    });
+
+    socket.on('peer-list', (peers) => {
+      peerRegistry.clear;
+      peers.forEach(pid => {
+        if (pid !== socket.id) peerRegistry[pid] = Date.now();
+      });
+    });
+
+    socket.on('peer-left', (pid) => {
+      delete peerRegistry[pid];
+    });
+
+    socket.on('peer-joined', (pid) => {
+      peerRegistry[pid] = Date.now();
+    });
+
+    socket.on('signal', ({ from, signalData }) => {
+      if (!signalData || !from) return;
+      targetPeerId = from;
+      switch (signalData.type) {
+        case 'offer': handleOffer(signalData); break;
+        case 'answer': handleAnswer(signalData); break;
+        case 'ice': handleRemoteICE(signalData); break;
+        case 'public-chat':
+          messageBuffer.push(signalData.payload);
+          displayMessages();
+          break;
+      }
+    });
+
+    function sendSignal(type, data) {
+      if (!targetPeerId) return log('⚠️ Select a peer first.');
+      socket.emit('signal', {
+        to: targetPeerId,
+        room: 'webrtc-room',
+        signalData: { type, ...data }
+      });
+      log(`📤 Sent ${type.toUpperCase()} to ${targetPeerId}`);
+    }
+
+    function requestPeerList() {
+      socket.emit('list-peers');
+    }
+
+    function togglePeerList() {
+      const peerList = document.getElementById("peerList");
+      const btn = document.getElementById("toggleBtn");
+      if (peerList.style.display === "none") {
+        peerList.style.display = "block";
+        btn.innerText = "H";
+      } else {
+        peerList.style.display = "none";
+        btn.innerText = "S";
+      }
+    }
+
+    function updatePeerList() {
+      const now = Date.now();
+      const ul = document.getElementById('peers');
+      ul.innerHTML = '';
+      const myLi = document.createElement('li');
+      myLi.className = 'me';
+      myLi.innerHTML = `[me]:${socket.id}`;
+      ul.appendChild(myLi);
+
+      for (const pid in peerRegistry) {
+        const li = document.createElement('li');
+        li.textContent = `[online]:${pid}`;
+        li.onclick = () => { targetPeerId = pid; initiateCall(); };
+        ul.appendChild(li);
+      }
+    }
+    setInterval(updatePeerList, 1000);
+
+    function checkEnter(e) {
+      if (e.key === "Enter") sendMessage();
+    }
+
+    function checkPublicEnter(e) {
+      if (e.key === "Enter") sendPublicMessage();
+    }
+
+    function sendMessage() {
+      const input = document.getElementById('inputField');
+      if (dc && dc.readyState === "open") {
+        dc.send(input.value);
+        terminal.innerText += "< " + input.value + "\n";
+        input.value = "";
+      }
+    }
+
+    function sendPublicMessage() {
+      const input = document.getElementById('publicChatInput');
+      const message = input.value.trim();
+      if (!message) return;
+      const payload = {
+        from: socket.id,
+        text: message,
+        timestamp: Date.now()
+      };
+      messageBuffer.push(payload);
+      displayMessages();
+      socket.emit('signal', {
+        room: 'webrtc-room',
+        signalData: {
+          type: 'public-chat',
+          payload
+        }
+      });
+      input.value = '';
+    }
+
+    function displayMessages() {
+      const sorted = messageBuffer.slice().sort((a, b) => a.timestamp - b.timestamp);
+      publicOutput.textContent = '';
+      sorted.forEach(m => {
+        const prefix = m.from === socket.id ? "[me]" : `[${m.from}]`;
+        publicOutput.textContent += `${prefix}: ${m.text}\n`;
+      });
+      publicOutput.scrollTop = publicOutput.scrollHeight;
+    }
+
+    async function getLocalMediaStream() {
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+        document.getElementById("localVideo").srcObject = localStream;
+      } catch (err) {
+        log("⚠️ Media access failed. Using synthetic stream.");
+        localStream = new MediaStream();
+        const canvas = document.createElement("canvas");
+        canvas.width = 320; canvas.height = 320;
+        const ctx = canvas.getContext("2d");
+        function drawNoise() {
+          const imageData = ctx.createImageData(canvas.width, canvas.height);
+          for (let i = 0; i < imageData.data.length; i += 4) {
+            const val = Math.random() * 255;
+            imageData.data[i] = val;
+            imageData.data[i + 1] = val;
+            imageData.data[i + 2] = val;
+            imageData.data[i + 3] = 255;
+          }
+          ctx.putImageData(imageData, 0, 0);
+          requestAnimationFrame(drawNoise);
+        }
+        drawNoise();
+        const videoTrack = canvas.captureStream(10).getVideoTracks()[0];
+        localStream.addTrack(videoTrack);
+        const audioCtx = new AudioContext();
+        const oscillator = audioCtx.createOscillator();
+        const dst = oscillator.connect(audioCtx.createMediaStreamDestination());
+        oscillator.start();
+        const audioTrack = dst.stream.getAudioTracks()[0];
+        localStream.addTrack(audioTrack);
+        document.getElementById("localVideo").srcObject = localStream;
+      }
+    }
+
+    async function setupPeerConnection(isOfferer) {
+      pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+      if (isOfferer) {
+        dc = pc.createDataChannel("terminal");
+        setupDataChannel();
+      }
+
+      pc.ondatachannel = event => {
+        dc = event.channel;
+        setupDataChannel();
+      };
+
+      pc.ontrack = event => {
+        const remoteVideo = document.getElementById("remoteVideo");
+        if (!remoteVideo.srcObject) {
+          const remoteStream = new MediaStream();
+          event.streams.forEach(stream => stream.getTracks().forEach(track => remoteStream.addTrack(track)));
+          remoteVideo.srcObject = remoteStream;
+        }
+      };
+
+      pc.onicecandidate = e => {
+        if (e.candidate) {
+          sendSignal('ice', { candidate: e.candidate });
+        }
+      };
+
+      if (isOfferer) {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        sendSignal('offer', { sdp: pc.localDescription });
+      }
+    }
+
+    async function initiateCall() {
+      await getLocalMediaStream();
+      await setupPeerConnection(true);
+    }
+
+    async function handleOffer({ sdp }) {
+      await getLocalMediaStream();
+      await setupPeerConnection(false);
+      await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      sendSignal('answer', { sdp: pc.localDescription });
+    }
+
+    async function handleAnswer({ sdp }) {
+      await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    }
+
+    function handleRemoteICE({ candidate }) {
+      pc.addIceCandidate(new RTCIceCandidate(candidate));
+    }
+
+    function setupDataChannel() {
+      dc.onmessage = event => {
+        terminal.innerText += "> " + event.data + "\n";
+        terminal.scrollTop = terminal.scrollHeight;
+      };
+      dc.onopen = () => terminal.innerText += "=== DataChannel Opened ===\n";
+      dc.onclose = () => terminal.innerText += "=== DataChannel Closed ===\n";
+    }
+  </script>
+</body>
+</html>
