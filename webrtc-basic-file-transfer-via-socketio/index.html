@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>WebRTC File Transfer via Socket.IO</title>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <style>
+    body { font-family: sans-serif; }
+    pre { background: #111; color: #0f0; padding: 10px; height: 200px; overflow-y: auto; }
+    #peerList ul { list-style: none; padding-left: 0; }
+    #peerList li { cursor: pointer; margin: 4px 0; }
+    #peerList li:hover { text-decoration: underline; }
+    #peerList li.online { color: lightgreen; }
+    #peerList li.away { color: orange; }
+    #progress { margin-top: 10px; font-size: 14px; color: #444; }
+  </style>
+</head>
+<body>
+  <h2>WebRTC File Transfer with Ack/Retry</h2>
+  <div id="peerList"><strong>Peers:</strong><ul id="peers"></ul></div>
+  <pre id="log"></pre>
+  <input type="file" id="fileInput">
+  <div id="progress"></div>
+
+  <script>
+    const socket = io("https://ash-temp-new-52546.portmap.io:52546", { transports: ["websocket"] });
+    const logBox = document.getElementById('log');
+    const peerList = document.getElementById('peers');
+    const fileInput = document.getElementById('fileInput');
+    const progressBox = document.getElementById('progress');
+    const CHUNK_SIZE = 64 * 1024;
+    const ACK_TIMEOUT = 5000;
+
+    let pc, dc, targetPeerId = '', peerRegistry = {};
+    let sending = false, currentFile, currentReader, offset = 0;
+    let awaitingAck = false, ackTimeoutID = null;
+    let incomingFile = null, receivedChunks = [];
+
+    function log(msg) {
+      logBox.innerText += msg + "\n"; logBox.scrollTop = logBox.scrollHeight;
+    }
+
+    function updatePeers() {
+      const now = Date.now(); peerList.innerHTML = '';
+      for (const pid in peerRegistry) {
+        const age = now - peerRegistry[pid];
+        const cls = age < 1000 ? 'online' : 'away';
+        if (age > 5000) { delete peerRegistry[pid]; continue; }
+        const li = document.createElement('li');
+        li.className = cls; li.textContent = `[${cls}]: ${pid}`;
+        li.onclick = () => { targetPeerId = pid; initiateCall(); };
+        peerList.appendChild(li);
+      }
+    }
+
+    socket.on('connect', () => {
+      log(`✅ Connected as ${socket.id}`);
+      socket.emit('join', 'file-room');
+    });
+
+    socket.on('peer-list', peers => {
+      const now = Date.now(); peers.forEach(pid => { if (pid !== socket.id) peerRegistry[pid] = now; });
+    });
+    socket.on('peer-joined', pid => peerRegistry[pid] = Date.now());
+    socket.on('peer-left', pid => delete peerRegistry[pid]);
+    setInterval(() => { socket.emit('list-peers'); updatePeers(); }, 1000);
+
+    socket.on('signal', async ({ from, signalData }) => {
+      if (!signalData || from === socket.id) return;
+      targetPeerId = from; peerRegistry[from] = Date.now();
+      switch (signalData.type) {
+        case 'offer': await handleOffer(signalData.data); break;
+        case 'answer': await handleAnswer(signalData.data); break;
+        case 'ice': pc.addIceCandidate(new RTCIceCandidate(signalData.data)); break;
+      }
+    });
+
+    function sendSignal(type, data) {
+      if (!targetPeerId) return;
+      socket.emit('signal', {
+        to: targetPeerId,
+        room: 'file-room',
+        signalData: { type, data }
+      });
+    }
+
+    async function initiateCall() {
+      pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com" }] });
+      dc = pc.createDataChannel("file");
+      setupDC();
+      pc.onicecandidate = e => e.candidate && sendSignal("ice", e.candidate);
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      sendSignal("offer", offer);
+    }
+
+    async function handleOffer(offer) {
+      pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com" }] });
+      pc.ondatachannel = e => { dc = e.channel; setupDC(); };
+      pc.onicecandidate = e => e.candidate && sendSignal("ice", e.candidate);
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      sendSignal("answer", answer);
+    }
+
+    async function handleAnswer(answer) {
+      await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    }
+
+    function setupDC() {
+      dc.binaryType = "arraybuffer";
+      dc.onopen = () => log("📡 DataChannel open");
+      dc.onclose = () => log("📴 DataChannel closed");
+
+      dc.onmessage = e => {
+        const data = e.data;
+        if (typeof data === "string") {
+          const msg = JSON.parse(data);
+          if (msg.type === "file-info") {
+            incomingFile = { name: msg.name, size: msg.size, received: 0 };
+            receivedChunks.length = 0;
+            progressBox.innerText = `Receiving ${incomingFile.name}`;
+            dc.send(JSON.stringify({ type: "ack", offset: 0 }));
+            log(`📁 Receiving ${msg.name}, size ${msg.size}`);
+          } else if (msg.type === "ack") {
+            clearTimeout(ackTimeoutID);
+            awaitingAck = false;
+            sendNextChunk();
+          } else if (msg.type === "file-complete") {
+            const blob = new Blob(receivedChunks);
+            const a = document.createElement("a");
+            a.href = URL.createObjectURL(blob);
+            a.download = incomingFile.name;
+            a.click();
+            log(`✅ File saved: ${incomingFile.name}`);
+            incomingFile = null;
+            progressBox.innerText = '';
+          }
+        } else {
+          receivedChunks.push(data);
+          incomingFile.received += data.byteLength;
+          progressBox.innerText = `Download: ${(incomingFile.received / incomingFile.size * 100).toFixed(1)}%`;
+          dc.send(JSON.stringify({ type: "ack", offset: incomingFile.received }));
+        }
+      };
+    }
+
+    fileInput.onchange = () => {
+      if (!dc || dc.readyState !== "open") return alert("Not connected");
+      currentFile = fileInput.files[0];
+      offset = 0;
+      sending = true;
+      dc.send(JSON.stringify({ type: "file-info", name: currentFile.name, size: currentFile.size }));
+      currentReader = new FileReader();
+      currentReader.onload = () => {
+        dc.send(currentReader.result);
+        offset += currentReader.result.byteLength;
+        progressBox.innerText = `Upload: ${(offset / currentFile.size * 100).toFixed(1)}%`;
+        awaitingAck = true;
+        ackTimeoutID = setTimeout(retryChunk, ACK_TIMEOUT);
+      };
+    };
+
+    function retryChunk() {
+      if (offset < currentFile.size) {
+        log("⚠️ ACK timeout, retrying chunk at " + offset);
+        const slice = currentFile.slice(offset, offset + CHUNK_SIZE);
+        currentReader.readAsArrayBuffer(slice);
+      }
+    }
+
+    function sendNextChunk() {
+      if (!sending) return;
+      if (offset >= currentFile.size) {
+        dc.send(JSON.stringify({ type: "file-complete" }));
+        log("✅ Upload complete");
+        sending = false;
+        return;
+      }
+      const slice = currentFile.slice(offset, offset + CHUNK_SIZE);
+      currentReader.readAsArrayBuffer(slice);
+    }
+  </script>
+</body>
+</html>
