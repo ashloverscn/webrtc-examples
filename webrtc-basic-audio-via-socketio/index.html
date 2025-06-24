@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WebRTC Audio Stream via Socket.IO</title>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <style>
+    body { font-family: sans-serif; }
+    #peerList { margin-top: 15px; padding: 10px; background: #222; color: #eee; border-radius: 5px; }
+    #peerList ul { list-style: none; padding-left: 0; }
+    #peerList li { cursor: pointer; margin-bottom: 6px; }
+    #peerList li:hover { text-decoration: underline; }
+    #peerList li.me { color: #888; user-select: none; }
+    #peerList li.offline { color: #555; font-style: italic; }
+    #muteButton {
+      padding: 10px;
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 16px;
+      display: flex;
+      align-items: center;
+    }
+    #muteButton i { margin-right: 8px; }
+    #muteButton.muted { background-color: #ff4444; }
+  </style>
+</head>
+<body>
+  <h2>WebRTC Audio Stream (Socket.IO Signaling)</h2>
+
+  <div id="peerList">
+    <strong>Active Peers:</strong>
+    <ul id="peers"></ul>
+  </div>
+
+  <h3>Remote Audio</h3>
+  <audio id="remoteAudio" autoplay controls></audio>
+
+  <div>
+    <button id="muteButton">
+      <i id="micIcon" class="fas fa-microphone"></i>Mute
+    </button>
+  </div>
+
+  <script>
+    const socket = io("https://ash-temp-new-52546.portmap.io:52546", { transports: ["websocket"] });
+    const peerId = localStorage.getItem('audio_peer_id') || 'peer_' + Math.random().toString(36).substr(2, 6);
+    localStorage.setItem('audio_peer_id', peerId);
+
+    const peerRegistry = {};
+    let targetPeerId = '';
+    let pc, localStream, isMuted = false;
+
+    function updatePeerList() {
+      const now = Date.now();
+      const ul = document.getElementById('peers');
+      ul.innerHTML = '';
+
+      const meLi = document.createElement('li');
+      meLi.className = 'me';
+      meLi.textContent = `[me]: ${socket.id}`;
+      ul.appendChild(meLi);
+
+      for (const pid in peerRegistry) {
+        const lastSeen = peerRegistry[pid];
+        const isOffline = now - lastSeen > 1000;
+        const isExpired = now - lastSeen > 5000;
+
+        if (isExpired) {
+          delete peerRegistry[pid];
+          continue;
+        }
+
+        const li = document.createElement('li');
+        if (isOffline) {
+          li.className = 'offline';
+          li.textContent = `[disconnected]: ${pid}`;
+        } else {
+          li.textContent = `[online]: ${pid}`;
+          li.onclick = () => {
+            targetPeerId = pid;
+            initiateCall();
+          };
+        }
+        ul.appendChild(li);
+      }
+    }
+
+    socket.on('connect', () => {
+      console.log(`✅ Connected as ${socket.id}`);
+      socket.emit('join', 'audio-room');
+    });
+
+    socket.on('peer-list', peers => {
+      const now = Date.now();
+      peers.forEach(pid => {
+        if (pid !== socket.id) peerRegistry[pid] = now;
+      });
+    });
+
+    socket.on('peer-joined', pid => {
+      if (pid !== socket.id) peerRegistry[pid] = Date.now();
+    });
+
+    socket.on('peer-left', pid => {
+      delete peerRegistry[pid];
+    });
+
+    socket.on('signal', ({ from, signalData }) => {
+      if (!signalData || from === socket.id) return;
+      peerRegistry[from] = Date.now();
+      targetPeerId = from;
+      console.log(`📥 ${signalData.type.toUpperCase()} from ${from}`);
+
+      switch (signalData.type) {
+        case 'offer': handleOffer(signalData.data); break;
+        case 'answer': handleAnswer(signalData.data); break;
+        case 'ice': handleRemoteICE(signalData.data); break;
+      }
+    });
+
+    setInterval(() => {
+      socket.emit('list-peers', 'audio-room');
+      updatePeerList();
+    }, 1000);
+
+    function sendSignal(type, data) {
+      if (!targetPeerId && type !== 'presence') return console.warn('⚠️ Select a peer first.');
+      socket.emit('signal', {
+        to: targetPeerId,
+        room: 'audio-room',
+        signalData: { type, data }
+      });
+      console.log(`📤 Sent ${type.toUpperCase()} to ${targetPeerId}`);
+    }
+
+    async function getMicrophoneOrNoise() {
+      try {
+        return await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const noise = ctx.createScriptProcessor(4096, 1, 1);
+        noise.onaudioprocess = e => {
+          const o = e.outputBuffer.getChannelData(0);
+          for (let i = 0; i < o.length; i++) o[i] = Math.random() * 2 - 1;
+        };
+        const dest = ctx.createMediaStreamDestination();
+        noise.connect(dest); noise.connect(ctx.destination);
+        return dest.stream;
+      }
+    }
+
+    async function setupPeerConnection(isOfferer) {
+      pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+
+      pc.onicecandidate = e => { if (e.candidate) sendSignal('ice', e.candidate); };
+      pc.ontrack = e => {
+        const audioEl = document.getElementById("remoteAudio");
+        audioEl.srcObject = e.streams[0];
+        audioEl.play().catch(() => console.log("🔇 Autoplay blocked."));
+      };
+
+      if (!localStream) localStream = await getMicrophoneOrNoise();
+      if (localStream) localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+
+      if (isOfferer) {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        sendSignal('offer', offer);
+      }
+    }
+
+    async function initiateCall() { await setupPeerConnection(true); }
+    async function handleOffer(offer) {
+      await setupPeerConnection(false);
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      const ans = await pc.createAnswer();
+      await pc.setLocalDescription(ans);
+      sendSignal('answer', ans);
+    }
+    async function handleAnswer(ans) { await pc.setRemoteDescription(new RTCSessionDescription(ans)); }
+    function handleRemoteICE(cand) { pc.addIceCandidate(new RTCIceCandidate(cand)).catch(console.warn); }
+
+    document.getElementById('muteButton').onclick = () => {
+      isMuted = !isMuted;
+      const icon = document.getElementById('micIcon');
+      document.getElementById('muteButton').classList.toggle('muted', isMuted);
+      icon.classList.toggle('fa-microphone-slash', isMuted);
+      icon.classList.toggle('fa-microphone', !isMuted);
+      localStream.getAudioTracks().forEach(t => t.enabled = !isMuted);
+    };
+  </script>
+  <script src="https://kit.fontawesome.com/a076d05399.js"></script>
+</body>
+</html>
