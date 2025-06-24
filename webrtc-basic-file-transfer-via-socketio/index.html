@@ -2,91 +2,108 @@
 <html>
 <head>
   <meta charset="UTF-8" />
-  <title>WebRTC File Transfer via Socket.IO</title>
+  <title>WebRTC File Transfer + Progress Controls</title>
   <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
   <style>
-    body { font-family: sans-serif; }
     pre { background: #111; color: #0f0; padding: 10px; height: 200px; overflow-y: auto; }
+    #peerList { background: #222; color: #ccc; padding: 10px; margin-top: 10px; border: 1px solid #444; border-radius: 5px; }
     #peerList ul { list-style: none; padding-left: 0; }
-    #peerList li { cursor: pointer; margin: 4px 0; }
-    #peerList li:hover { text-decoration: underline; }
-    #peerList li.online { color: lightgreen; }
-    #peerList li.away { color: orange; }
-    #progress { margin-top: 10px; font-size: 14px; color: #444; }
+    #peerList li { cursor: pointer; margin-bottom: 5px; }
+    #peerList li.me { color: #888; user-select: none; }
+    #peerList li.offline { color: #555; font-style: italic; }
+    button { margin: 5px; padding: 6px 12px; }
   </style>
 </head>
 <body>
-  <h2>WebRTC File Transfer with Ack/Retry</h2>
-  <div id="peerList"><strong>Peers:</strong><ul id="peers"></ul></div>
-  <pre id="log"></pre>
+  <h2>WebRTC File Transfer with Controls</h2>
+  <div id="peerList"><strong>Active Peers:</strong><ul id="peers"></ul></div>
+  <h3>Terminal Output & Progress</h3>
+  <pre id="terminalOutput"></pre>
   <input type="file" id="fileInput">
-  <div id="progress"></div>
+  <button id="startBtn" disabled>Start Send</button>
+  <button id="cancelBtn" disabled>Cancel Transfer</button>
 
   <script>
     const socket = io("https://ash-temp-new-52546.portmap.io:52546", { transports: ["websocket"] });
-    const logBox = document.getElementById('log');
-    const peerList = document.getElementById('peers');
-    const fileInput = document.getElementById('fileInput');
-    const progressBox = document.getElementById('progress');
-    const CHUNK_SIZE = 64 * 1024;
-    const ACK_TIMEOUT = 5000;
+    const terminal = document.getElementById("terminalOutput");
+    const peersUl = document.getElementById("peers");
+    const fileInput = document.getElementById("fileInput");
+    const startBtn = document.getElementById("startBtn");
+    const cancelBtn = document.getElementById("cancelBtn");
 
-    let pc, dc, targetPeerId = '', peerRegistry = {};
-    let sending = false, currentFile, currentReader, offset = 0;
-    let awaitingAck = false, ackTimeoutID = null;
-    let incomingFile = null, receivedChunks = [];
+    const CHUNK_SIZE = 64 * 1024, ACK_TIMEOUT = 5000;
+    let pc, dc, targetPeer = "", registry = {};
+    let fileObj, reader, offset = 0, awaitingAck = false, ackTimer = null;
+    let sending = false, incoming = null, recChunks = [], incomingOffset = 0;
 
     function log(msg) {
-      logBox.innerText += msg + "\n"; logBox.scrollTop = logBox.scrollHeight;
+      terminal.innerText += msg + "\n";
+      terminal.scrollTop = terminal.scrollHeight;
     }
 
     function updatePeers() {
-      const now = Date.now(); peerList.innerHTML = '';
-      for (const pid in peerRegistry) {
-        const age = now - peerRegistry[pid];
-        const cls = age < 1000 ? 'online' : 'away';
-        if (age > 5000) { delete peerRegistry[pid]; continue; }
-        const li = document.createElement('li');
-        li.className = cls; li.textContent = `[${cls}]: ${pid}`;
-        li.onclick = () => { targetPeerId = pid; initiateCall(); };
-        peerList.appendChild(li);
-      }
-    }
+      const now = Date.now();
+      peersUl.innerHTML = "";
+      const meLi = document.createElement("li");
+      meLi.className = "me";
+      meLi.textContent = `[me]: ${socket.id}`;
+      peersUl.appendChild(meLi);
 
-    socket.on('connect', () => {
-      log(`✅ Connected as ${socket.id}`);
-      socket.emit('join', 'file-room');
-    });
-
-    socket.on('peer-list', peers => {
-      const now = Date.now(); peers.forEach(pid => { if (pid !== socket.id) peerRegistry[pid] = now; });
-    });
-    socket.on('peer-joined', pid => peerRegistry[pid] = Date.now());
-    socket.on('peer-left', pid => delete peerRegistry[pid]);
-    setInterval(() => { socket.emit('list-peers'); updatePeers(); }, 1000);
-
-    socket.on('signal', async ({ from, signalData }) => {
-      if (!signalData || from === socket.id) return;
-      targetPeerId = from; peerRegistry[from] = Date.now();
-      switch (signalData.type) {
-        case 'offer': await handleOffer(signalData.data); break;
-        case 'answer': await handleAnswer(signalData.data); break;
-        case 'ice': pc.addIceCandidate(new RTCIceCandidate(signalData.data)); break;
-      }
-    });
-
-    function sendSignal(type, data) {
-      if (!targetPeerId) return;
-      socket.emit('signal', {
-        to: targetPeerId,
-        room: 'file-room',
-        signalData: { type, data }
+      Object.keys(registry).forEach(pid => {
+        const age = now - registry[pid];
+        if (age > 5000) { delete registry[pid]; return; }
+        const li = document.createElement("li");
+        if (age > 1000) {
+          li.className = "offline";
+          li.textContent = `[disconnected]: ${pid}`;
+        } else {
+          li.textContent = `[online]: ${pid}`;
+          li.onclick = () => { targetPeer = pid; startCall(); };
+        }
+        peersUl.appendChild(li);
       });
     }
 
-    async function initiateCall() {
-      pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com" }] });
-      dc = pc.createDataChannel("file");
+    socket.on("connect", () => {
+      log(`✅ Connected as ${socket.id}`);
+      socket.emit("join", "serial-room");
+    });
+
+    socket.on("peer-list", peers => {
+      const now = Date.now();
+      peers.forEach(pid => { if (pid !== socket.id) registry[pid] = now; });
+    });
+    socket.on("peer-joined", pid => { registry[pid] = Date.now(); updatePeers(); });
+    socket.on("peer-left", pid => { delete registry[pid]; updatePeers(); });
+
+    setInterval(() => {
+      socket.emit("list-peers", "serial-room");
+      updatePeers();
+    }, 1000);
+
+    socket.on("signal", async ({ from, signalData }) => {
+      if (!signalData || from === socket.id) return;
+      registry[from] = Date.now();
+      targetPeer = from;
+
+      if (signalData.type === "offer") await handleOffer(signalData.data);
+      if (signalData.type === "answer") await handleAnswer(signalData.data);
+      if (signalData.type === "ice") pc.addIceCandidate(new RTCIceCandidate(signalData.data));
+    });
+
+    function sendSignal(type, data) {
+      if (!targetPeer) return;
+      socket.emit("signal", {
+        to: targetPeer,
+        room: "serial-room",
+        signalData: { type, data }
+      });
+      log(`📤 Sent ${type.toUpperCase()} to ${targetPeer}`);
+    }
+
+    async function startCall() {
+      pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+      dc = pc.createDataChannel("serial");
       setupDC();
       pc.onicecandidate = e => e.candidate && sendSignal("ice", e.candidate);
       const offer = await pc.createOffer();
@@ -95,8 +112,8 @@
     }
 
     async function handleOffer(offer) {
-      pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com" }] });
-      pc.ondatachannel = e => { dc = e.channel; setupDC(); };
+      pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+      pc.ondatachannel = event => { dc = event.channel; setupDC(); };
       pc.onicecandidate = e => e.candidate && sendSignal("ice", e.candidate);
       await pc.setRemoteDescription(new RTCSessionDescription(offer));
       const answer = await pc.createAnswer();
@@ -110,76 +127,96 @@
 
     function setupDC() {
       dc.binaryType = "arraybuffer";
-      dc.onopen = () => log("📡 DataChannel open");
-      dc.onclose = () => log("📴 DataChannel closed");
+      dc.onopen = () => {
+        log("=== DataChannel Opened ===");
+        startBtn.disabled = false;
+      };
+      dc.onclose = () => log("=== DataChannel Closed ===");
 
-      dc.onmessage = e => {
-        const data = e.data;
+      dc.onmessage = event => {
+        const data = event.data;
         if (typeof data === "string") {
           const msg = JSON.parse(data);
           if (msg.type === "file-info") {
-            incomingFile = { name: msg.name, size: msg.size, received: 0 };
-            receivedChunks.length = 0;
-            progressBox.innerText = `Receiving ${incomingFile.name}`;
+            incoming = { name: msg.name, size: msg.size };
+            recChunks = []; incomingOffset = 0;
+            log(`⬇️ Receiving ${incoming.name} (${incoming.size} bytes)`);
             dc.send(JSON.stringify({ type: "ack", offset: 0 }));
-            log(`📁 Receiving ${msg.name}, size ${msg.size}`);
-          } else if (msg.type === "ack") {
-            clearTimeout(ackTimeoutID);
+          } else if (msg.type === "ack" && sending) {
+            clearTimeout(ackTimer);
             awaitingAck = false;
-            sendNextChunk();
+            log(`⬆️ Sender: Ack ${msg.offset}/${fileObj.size} (${(msg.offset/fileObj.size*100).toFixed(1)}%)`);
+            if (msg.offset >= fileObj.size) {
+              dc.send(JSON.stringify({ type: "file-complete" }));
+              sending = false;
+              log("✅ Upload complete");
+              startBtn.disabled = false;
+            } else {
+              sendNextChunk();
+            }
           } else if (msg.type === "file-complete") {
-            const blob = new Blob(receivedChunks);
+            log("⬇️ File transfer complete");
+            const blob = new Blob(recChunks);
             const a = document.createElement("a");
             a.href = URL.createObjectURL(blob);
-            a.download = incomingFile.name;
+            a.download = incoming.name;
             a.click();
-            log(`✅ File saved: ${incomingFile.name}`);
-            incomingFile = null;
-            progressBox.innerText = '';
+            log(`✅ Saved ${incoming.name}`);
+            incoming = null;
+            cancelBtn.disabled = true;
+            startBtn.disabled = false;
           }
         } else {
-          receivedChunks.push(data);
-          incomingFile.received += data.byteLength;
-          progressBox.innerText = `Download: ${(incomingFile.received / incomingFile.size * 100).toFixed(1)}%`;
-          dc.send(JSON.stringify({ type: "ack", offset: incomingFile.received }));
+          recChunks.push(data);
+          incomingOffset += data.byteLength;
+          log(`⬇️ Receiver: ${incomingOffset}/${incoming.size} (${(incomingOffset/incoming.size*100).toFixed(1)}%)`);
+          dc.send(JSON.stringify({ type: "ack", offset: incomingOffset }));
         }
       };
     }
 
     fileInput.onchange = () => {
-      if (!dc || dc.readyState !== "open") return alert("Not connected");
-      currentFile = fileInput.files[0];
-      offset = 0;
-      sending = true;
-      dc.send(JSON.stringify({ type: "file-info", name: currentFile.name, size: currentFile.size }));
-      currentReader = new FileReader();
-      currentReader.onload = () => {
-        dc.send(currentReader.result);
-        offset += currentReader.result.byteLength;
-        progressBox.innerText = `Upload: ${(offset / currentFile.size * 100).toFixed(1)}%`;
+      startBtn.disabled = !fileInput.files.length;
+    };
+
+    startBtn.onclick = () => {
+      if (!dc || dc.readyState !== "open" || !fileInput.files[0]) return;
+      fileObj = fileInput.files[0];
+      offset = 0; sending = true;
+      startBtn.disabled = true;
+      cancelBtn.disabled = false;
+      dc.send(JSON.stringify({ type: "file-info", name: fileObj.name, size: fileObj.size }));
+      reader = new FileReader();
+      reader.onload = () => {
+        dc.send(reader.result);
+        offset += reader.result.byteLength;
+        log(`⬆️ Sender: ${offset}/${fileObj.size} (${(offset/fileObj.size*100).toFixed(1)}%)`);
         awaitingAck = true;
-        ackTimeoutID = setTimeout(retryChunk, ACK_TIMEOUT);
+        ackTimer = setTimeout(retryChunk, ACK_TIMEOUT);
       };
+      sendNextChunk();
+    };
+
+    cancelBtn.onclick = () => {
+      sending = false;
+      clearTimeout(ackTimer);
+      dc.send(JSON.stringify({ type: "file-complete" }));
+      log("❌ Transfer cancelled");
+      cancelBtn.disabled = true;
+      startBtn.disabled = false;
     };
 
     function retryChunk() {
-      if (offset < currentFile.size) {
-        log("⚠️ ACK timeout, retrying chunk at " + offset);
-        const slice = currentFile.slice(offset, offset + CHUNK_SIZE);
-        currentReader.readAsArrayBuffer(slice);
-      }
+      if (!sending) return;
+      log("⚠️ ACK timeout, retrying chunk...");
+      sendNextChunk(true);
     }
 
-    function sendNextChunk() {
+    function sendNextChunk(retry = false) {
       if (!sending) return;
-      if (offset >= currentFile.size) {
-        dc.send(JSON.stringify({ type: "file-complete" }));
-        log("✅ Upload complete");
-        sending = false;
-        return;
-      }
-      const slice = currentFile.slice(offset, offset + CHUNK_SIZE);
-      currentReader.readAsArrayBuffer(slice);
+      if (offset >= fileObj.size) return;
+      const slice = fileObj.slice(offset, offset + CHUNK_SIZE);
+      reader.readAsArrayBuffer(slice);
     }
   </script>
 </body>
