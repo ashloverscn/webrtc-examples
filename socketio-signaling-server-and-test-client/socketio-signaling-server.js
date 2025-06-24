@@ -11,6 +11,8 @@ const io = new Server(server, {
   cors: { origin: "*" }
 });
 
+const messageBuffer = [];
+
 app.get('/health', (req, res) => {
   res.send('✅ Signaling server is alive');
 });
@@ -51,6 +53,20 @@ io.on('connection', (socket) => {
         socket.to(room).emit('peer-left', socket.id);
       }
     }
+  });
+
+  socket.on('join-room', (roomName, peerId) => {
+    socket.join(roomName);
+    console.log(`💬 ${peerId} joined chat room: ${roomName}`);
+    socket.emit('chat-history', messageBuffer);
+  });
+
+  socket.on('public-message', (msg) => {
+    if (!msg || !msg.text || !msg.from || !msg.timestamp) return;
+    messageBuffer.push(msg);
+    if (messageBuffer.length > 1008) messageBuffer.shift();
+    io.to('public-chat').emit('public-message', msg);
+    console.log(`🗨️ ${msg.from}: ${msg.text}`);
   });
 });
 
