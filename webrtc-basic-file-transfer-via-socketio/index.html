@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="UTF-8" />
-  <title>WebRTC File Transfer + Progress Controls</title>
+  <title>WebRTC File Transfer</title>
   <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
   <style>
     pre { background: #111; color: #0f0; padding: 10px; height: 200px; overflow-y: auto; }
@@ -15,10 +15,16 @@
   </style>
 </head>
 <body>
-  <h2>WebRTC File Transfer with Controls</h2>
-  <div id="peerList"><strong>Active Peers:</strong><ul id="peers"></ul></div>
+  <h2>WebRTC File Transfer</h2>
+
+  <div id="peerList">
+    <strong>Active Peers:</strong>
+    <ul id="peers"></ul>
+  </div>
+
   <h3>Terminal Output & Progress</h3>
   <pre id="terminalOutput"></pre>
+
   <input type="file" id="fileInput">
   <button id="startBtn" disabled>Start Send</button>
   <button id="cancelBtn" disabled>Cancel Transfer</button>
@@ -139,21 +145,20 @@
           const msg = JSON.parse(data);
           if (msg.type === "file-info") {
             incoming = { name: msg.name, size: msg.size };
-            recChunks = []; incomingOffset = 0;
-            log(`⬇️ Receiving ${incoming.name} (${incoming.size} bytes)`);
+            recChunks = [];
+            incomingOffset = 0;
+            log(`⬇️ Receiving ${incoming.name} (${incomingOffset}/${incoming.size} bytes, 0.0%)`);
             dc.send(JSON.stringify({ type: "ack", offset: 0 }));
           } else if (msg.type === "ack" && sending) {
             clearTimeout(ackTimer);
             awaitingAck = false;
-            log(`⬆️ Sender: Ack ${msg.offset}/${fileObj.size} (${(msg.offset/fileObj.size*100).toFixed(1)}%)`);
+            log(`⬆️ Sender: ${msg.offset}/${fileObj.size} bytes (${(msg.offset/fileObj.size*100).toFixed(1)}%)`);
             if (msg.offset >= fileObj.size) {
               dc.send(JSON.stringify({ type: "file-complete" }));
               sending = false;
               log("✅ Upload complete");
               startBtn.disabled = false;
-            } else {
-              sendNextChunk();
-            }
+            } else sendNextChunk();
           } else if (msg.type === "file-complete") {
             log("⬇️ File transfer complete");
             const blob = new Blob(recChunks);
@@ -169,7 +174,7 @@
         } else {
           recChunks.push(data);
           incomingOffset += data.byteLength;
-          log(`⬇️ Receiver: ${incomingOffset}/${incoming.size} (${(incomingOffset/incoming.size*100).toFixed(1)}%)`);
+          log(`⬇️ Receiver: ${incomingOffset}/${incoming.size} bytes (${(incomingOffset/incoming.size*100).toFixed(1)}%)`);
           dc.send(JSON.stringify({ type: "ack", offset: incomingOffset }));
         }
       };
@@ -182,7 +187,8 @@
     startBtn.onclick = () => {
       if (!dc || dc.readyState !== "open" || !fileInput.files[0]) return;
       fileObj = fileInput.files[0];
-      offset = 0; sending = true;
+      offset = 0;
+      sending = true;
       startBtn.disabled = true;
       cancelBtn.disabled = false;
       dc.send(JSON.stringify({ type: "file-info", name: fileObj.name, size: fileObj.size }));
@@ -190,7 +196,7 @@
       reader.onload = () => {
         dc.send(reader.result);
         offset += reader.result.byteLength;
-        log(`⬆️ Sender: ${offset}/${fileObj.size} (${(offset/fileObj.size*100).toFixed(1)}%)`);
+        log(`⬆️ Sender: ${offset}/${fileObj.size} bytes (${(offset/fileObj.size*100).toFixed(1)}%)`);
         awaitingAck = true;
         ackTimer = setTimeout(retryChunk, ACK_TIMEOUT);
       };
