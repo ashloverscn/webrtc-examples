@@ -12,6 +12,7 @@
     #peerList li.me { color: #888; user-select: none; }
     #peerList li.offline { color: #555; font-style: italic; }
     button { margin: 5px; padding: 6px 12px; }
+    #acceptBtn { display: none; }
   </style>
 </head>
 <body>
@@ -28,6 +29,7 @@
   <input type="file" id="fileInput">
   <button id="startBtn" disabled>Start Send</button>
   <button id="cancelBtn" disabled>Cancel Transfer</button>
+  <button id="acceptBtn">Accept Incoming File</button>
 
   <script>
     const socket = io("https://ash-temp-new-52546.portmap.io:52546", { transports: ["websocket"] });
@@ -36,11 +38,13 @@
     const fileInput = document.getElementById("fileInput");
     const startBtn = document.getElementById("startBtn");
     const cancelBtn = document.getElementById("cancelBtn");
+    const acceptBtn = document.getElementById("acceptBtn");
 
     const CHUNK_SIZE = 64 * 1024, ACK_TIMEOUT = 5000;
     let pc, dc, targetPeer = "", registry = {};
-    let fileObj, reader, offset = 0, awaitingAck = false, ackTimer = null;
+    let fileObj, reader, offset = 0, ackTimer = null;
     let sending = false, incoming = null, recChunks = [], incomingOffset = 0;
+    let readyToReceive = false;
 
     function log(msg) {
       terminal.innerText += msg + "\n";
@@ -145,20 +149,9 @@
           const msg = JSON.parse(data);
           if (msg.type === "file-info") {
             incoming = { name: msg.name, size: msg.size };
-            recChunks = [];
-            incomingOffset = 0;
-            log(`⬇️ Receiving ${incoming.name} (${incomingOffset}/${incoming.size} bytes, 0.0%)`);
-            dc.send(JSON.stringify({ type: "ack", offset: 0 }));
-          } else if (msg.type === "ack" && sending) {
-            clearTimeout(ackTimer);
-            awaitingAck = false;
-            log(`⬆️ Sender: ${msg.offset}/${fileObj.size} bytes (${(msg.offset/fileObj.size*100).toFixed(1)}%)`);
-            if (msg.offset >= fileObj.size) {
-              dc.send(JSON.stringify({ type: "file-complete" }));
-              sending = false;
-              log("✅ Upload complete");
-              startBtn.disabled = false;
-            } else sendNextChunk();
+            recChunks = []; incomingOffset = 0;
+            log(`📬 Incoming file: ${incoming.name} (${incoming.size} bytes).`);
+            acceptBtn.style.display = "inline-block";
           } else if (msg.type === "file-complete") {
             log("⬇️ File transfer complete");
             const blob = new Blob(recChunks);
@@ -170,15 +163,33 @@
             incoming = null;
             cancelBtn.disabled = true;
             startBtn.disabled = false;
+            acceptBtn.style.display = "none";
+          } else if (msg.type === "ack" && sending) {
+            clearTimeout(ackTimer);
+            log(`⬆️ Sent ${msg.offset}/${fileObj.size} bytes (${(msg.offset / fileObj.size * 100).toFixed(1)}%)`);
+            if (msg.offset >= fileObj.size) {
+              dc.send(JSON.stringify({ type: "file-complete" }));
+              sending = false;
+              log("✅ Upload complete");
+              startBtn.disabled = false;
+            } else sendNextChunk();
           }
-        } else {
+        } else if (readyToReceive) {
           recChunks.push(data);
           incomingOffset += data.byteLength;
-          log(`⬇️ Receiver: ${incomingOffset}/${incoming.size} bytes (${(incomingOffset/incoming.size*100).toFixed(1)}%)`);
+          log(`⬇️ Received ${incomingOffset}/${incoming.size} bytes (${(incomingOffset / incoming.size * 100).toFixed(1)}%)`);
           dc.send(JSON.stringify({ type: "ack", offset: incomingOffset }));
         }
       };
     }
+
+    acceptBtn.onclick = () => {
+      if (!incoming) return;
+      readyToReceive = true;
+      cancelBtn.disabled = false;
+      acceptBtn.style.display = "none";
+      log("✅ File accepted. Ready to receive...");
+    };
 
     fileInput.onchange = () => {
       startBtn.disabled = !fileInput.files.length;
@@ -187,8 +198,7 @@
     startBtn.onclick = () => {
       if (!dc || dc.readyState !== "open" || !fileInput.files[0]) return;
       fileObj = fileInput.files[0];
-      offset = 0;
-      sending = true;
+      offset = 0; sending = true;
       startBtn.disabled = true;
       cancelBtn.disabled = false;
       dc.send(JSON.stringify({ type: "file-info", name: fileObj.name, size: fileObj.size }));
@@ -196,8 +206,7 @@
       reader.onload = () => {
         dc.send(reader.result);
         offset += reader.result.byteLength;
-        log(`⬆️ Sender: ${offset}/${fileObj.size} bytes (${(offset/fileObj.size*100).toFixed(1)}%)`);
-        awaitingAck = true;
+        log(`⬆️ Sent ${offset}/${fileObj.size} bytes (${(offset / fileObj.size * 100).toFixed(1)}%)`);
         ackTimer = setTimeout(retryChunk, ACK_TIMEOUT);
       };
       sendNextChunk();
@@ -210,15 +219,17 @@
       log("❌ Transfer cancelled");
       cancelBtn.disabled = true;
       startBtn.disabled = false;
+      acceptBtn.style.display = "none";
+      readyToReceive = false;
     };
 
     function retryChunk() {
       if (!sending) return;
       log("⚠️ ACK timeout, retrying chunk...");
-      sendNextChunk(true);
+      sendNextChunk();
     }
 
-    function sendNextChunk(retry = false) {
+    function sendNextChunk() {
       if (!sending) return;
       if (offset >= fileObj.size) return;
       const slice = fileObj.slice(offset, offset + CHUNK_SIZE);
