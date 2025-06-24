@@ -94,8 +94,8 @@
   <button onclick="sendMessage()">Send</button>
 
   <script>
-    const socket = io("https://ash-temp-new-52546.portmap.io:52546");
-    const peerId = localStorage.getItem('peerId') || socket.id || 'peer_' + Math.random().toString(36).substring(2, 6);
+    const socket = io("https://ash-temp-new-52546.portmap.io:52546", { transports: ["websocket"] });
+    const peerId = localStorage.getItem('peerId') || 'peer_' + Math.random().toString(36).substring(2, 6);
     localStorage.setItem('peerId', peerId);
 
     let targetPeerId = '';
@@ -113,23 +113,21 @@
     socket.on('connect', () => {
       log(`✅ Connected to signaling server as ${socket.id}`);
       socket.emit('join', 'webrtc-room');
-      requestPeerList();
-      setInterval(() => socket.emit('list-peers'), 1000);
     });
 
     socket.on('peer-list', (peers) => {
-      peerRegistry.clear;
+      const now = Date.now();
       peers.forEach(pid => {
-        if (pid !== socket.id) peerRegistry[pid] = Date.now();
+        if (pid !== socket.id) peerRegistry[pid] = now;
       });
+    });
+
+    socket.on('peer-joined', (pid) => {
+      if (pid !== socket.id) peerRegistry[pid] = Date.now();
     });
 
     socket.on('peer-left', (pid) => {
       delete peerRegistry[pid];
-    });
-
-    socket.on('peer-joined', (pid) => {
-      peerRegistry[pid] = Date.now();
     });
 
     socket.on('signal', ({ from, signalData }) => {
@@ -146,6 +144,10 @@
       }
     });
 
+    function requestPeerList() {
+      socket.emit('list-peers');
+    }
+
     function sendSignal(type, data) {
       if (!targetPeerId) return log('⚠️ Select a peer first.');
       socket.emit('signal', {
@@ -154,10 +156,6 @@
         signalData: { type, ...data }
       });
       log(`📤 Sent ${type.toUpperCase()} to ${targetPeerId}`);
-    }
-
-    function requestPeerList() {
-      socket.emit('list-peers');
     }
 
     function togglePeerList() {
@@ -182,13 +180,29 @@
       ul.appendChild(myLi);
 
       for (const pid in peerRegistry) {
+        const lastSeen = peerRegistry[pid];
+        const isOffline = now - lastSeen > 1000;
+        const isExpired = now - lastSeen > 5000;
+        if (isExpired) {
+          delete peerRegistry[pid];
+          continue;
+        }
         const li = document.createElement('li');
-        li.textContent = `[online]:${pid}`;
-        li.onclick = () => { targetPeerId = pid; initiateCall(); };
+        if (isOffline) {
+          li.className = 'offline';
+          li.textContent = `[disconnected]:${pid}`;
+        } else {
+          li.textContent = `[online]:${pid}`;
+          li.onclick = () => { targetPeerId = pid; initiateCall(); };
+        }
         ul.appendChild(li);
       }
     }
-    setInterval(updatePeerList, 1000);
+
+    setInterval(() => {
+      requestPeerList();
+      updatePeerList();
+    }, 1000);
 
     function checkEnter(e) {
       if (e.key === "Enter") sendMessage();
