@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Public Chat Terminal via Socket.IO</title>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <style>
+    pre {
+      background: #111;
+      color: #0f0;
+      padding: 10px;
+      height: 300px;
+      overflow-y: auto;
+      font-family: monospace;
+    }
+    #publicChatInput {
+      width: calc(100% - 80px);
+      margin-top: 5px;
+    }
+  </style>
+</head>
+<body>
+  <h3>Public Chat Terminal (Socket.IO)</h3>
+  <pre id="publicChatOutput"></pre>
+  <input type="text" id="publicChatInput" placeholder="Type a public message..." onkeydown="checkPublicEnter(event)">
+  <button onclick="sendPublicMessage()">Send</button>
+
+  <script>
+    const peerId = localStorage.getItem('persistentPeerId') || 'peer_' + Math.random().toString(36).substr(2, 6);
+    localStorage.setItem('persistentPeerId', peerId);
+
+    const socket = io("https://ash-temp-new-52546.portmap.io:52546", {
+      transports: ["websocket"]
+    });
+
+    let messageBuffer = [];
+    const publicOutput = document.getElementById('publicChatOutput');
+
+    socket.on("connect", () => {
+      socket.emit("join-room", "public-chat", peerId);
+    });
+
+    socket.on("chat-history", (history) => {
+      if (Array.isArray(history)) {
+        messageBuffer = history;
+        displayMessages();
+      }
+    });
+
+    socket.on("public-message", (msg) => {
+      if (!msg || !msg.text || !msg.from || !msg.timestamp) return;
+      messageBuffer.push(msg);
+      if (messageBuffer.length > 1008) messageBuffer.shift();
+      displayMessages();
+    });
+
+    function sendPublicMessage() {
+      const input = document.getElementById('publicChatInput');
+      const message = input.value.trim();
+      if (!message) return;
+
+      const msgObj = {
+        from: peerId,
+        text: message,
+        timestamp: Date.now()
+      };
+
+      socket.emit("public-message", msgObj);
+      input.value = "";
+    }
+
+    function displayMessages() {
+      const sorted = messageBuffer.slice().sort((a, b) => a.timestamp - b.timestamp);
+      publicOutput.textContent = "";
+      sorted.forEach(m => {
+        const prefix = m.from === peerId ? "[me]" : `[${m.from}]`;
+        publicOutput.textContent += `${prefix}: ${m.text}\n`;
+      });
+      publicOutput.scrollTop = publicOutput.scrollHeight;
+    }
+
+    function checkPublicEnter(e) {
+      if (e.key === "Enter") sendPublicMessage();
+    }
+  </script>
+</body>
+</html>
