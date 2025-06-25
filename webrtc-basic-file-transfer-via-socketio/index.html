@@ -152,6 +152,8 @@
             incomingOffset = 0;
             receiving = true;
             cancelBtn.disabled = false;
+            fileInput.disabled = true;
+            startBtn.disabled = true;
             log(`⬇️ Receiving ${incoming.name} (0/${incoming.size} bytes, 0%)`);
             dc.send(JSON.stringify({ type: "ack", offset: 0 }));
           } else if (msg.type === "ack" && sending) {
@@ -162,12 +164,15 @@
               dc.send(JSON.stringify({ type: "file-complete" }));
               sending = false;
               cancelBtn.disabled = true;
+              fileInput.disabled = false;
               startBtn.disabled = false;
               log("✅ Upload complete");
             } else sendNextChunk();
           } else if (msg.type === "file-complete") {
             receiving = false;
             cancelBtn.disabled = true;
+            fileInput.disabled = false;
+            startBtn.disabled = false;
             log("⬇️ File transfer complete");
             const blob = new Blob(recChunks);
             const a = document.createElement("a");
@@ -181,6 +186,7 @@
             receiving = false;
             clearTimeout(ackTimer);
             cancelBtn.disabled = true;
+            fileInput.disabled = false;
             startBtn.disabled = false;
             log("❌ Transfer cancelled by peer");
           }
@@ -206,6 +212,7 @@
       receiving = false;
       startBtn.disabled = true;
       cancelBtn.disabled = false;
+      fileInput.disabled = true;
       dc.send(JSON.stringify({ type: "file-info", name: fileObj.name, size: fileObj.size }));
       reader = new FileReader();
       reader.onload = () => {
@@ -226,6 +233,7 @@
       incoming = null;
       offset = 0;
       cancelBtn.disabled = true;
+      fileInput.disabled = false;
       startBtn.disabled = false;
       log("❌ Transfer cancelled");
     };
@@ -233,7 +241,7 @@
     function retryChunk() {
       if (!sending) return;
       log("⚠️ ACK timeout, retrying chunk...");
-      sendNextChunk(true);
+      sendNextChunk();
     }
 
     function sendNextChunk() {
