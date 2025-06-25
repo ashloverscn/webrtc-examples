@@ -40,7 +40,8 @@
     const CHUNK_SIZE = 64 * 1024, ACK_TIMEOUT = 5000;
     let pc, dc, targetPeer = "", registry = {};
     let fileObj, reader, offset = 0, awaitingAck = false, ackTimer = null;
-    let sending = false, incoming = null, recChunks = [], incomingOffset = 0, receiving = false;
+    let sending = false, receiving = false;
+    let incoming = null, recChunks = [], incomingOffset = 0;
 
     function log(msg) {
       terminal.innerText += msg + "\n";
@@ -142,7 +143,7 @@
         if (typeof data === "string") {
           const msg = JSON.parse(data);
           if (msg.type === "file-info") {
-            if (!confirm(`Incoming: ${msg.name} (${msg.size} bytes)\nDo you want to receive it?`)) {
+            if (!confirm(`Incoming: ${msg.name} (${msg.size} bytes)\nAccept this file?`)) {
               dc.send(JSON.stringify({ type: "cancel" }));
               return;
             }
@@ -151,7 +152,7 @@
             incomingOffset = 0;
             receiving = true;
             cancelBtn.disabled = false;
-            log(`⬇️ Receiving ${incoming.name} (${incomingOffset}/${incoming.size} bytes, 0.0%)`);
+            log(`⬇️ Receiving ${incoming.name} (0/${incoming.size} bytes, 0%)`);
             dc.send(JSON.stringify({ type: "ack", offset: 0 }));
           } else if (msg.type === "ack" && sending) {
             clearTimeout(ackTimer);
@@ -178,14 +179,13 @@
           } else if (msg.type === "cancel") {
             sending = false;
             receiving = false;
-            offset = 0;
-            incoming = null;
+            clearTimeout(ackTimer);
             cancelBtn.disabled = true;
             startBtn.disabled = false;
-            clearTimeout(ackTimer);
             log("❌ Transfer cancelled by peer");
           }
         } else {
+          if (!receiving || !incoming) return;
           recChunks.push(data);
           incomingOffset += data.byteLength;
           log(`⬇️ Receiver: ${incomingOffset}/${incoming.size} bytes (${(incomingOffset/incoming.size*100).toFixed(1)}%)`);
@@ -203,6 +203,7 @@
       fileObj = fileInput.files[0];
       offset = 0;
       sending = true;
+      receiving = false;
       startBtn.disabled = true;
       cancelBtn.disabled = false;
       dc.send(JSON.stringify({ type: "file-info", name: fileObj.name, size: fileObj.size }));
@@ -218,14 +219,12 @@
     };
 
     cancelBtn.onclick = () => {
-      if (dc && dc.readyState === "open") {
-        dc.send(JSON.stringify({ type: "cancel" }));
-      }
+      if (dc && dc.readyState === "open") dc.send(JSON.stringify({ type: "cancel" }));
       sending = false;
       receiving = false;
-      offset = 0;
-      incoming = null;
       clearTimeout(ackTimer);
+      incoming = null;
+      offset = 0;
       cancelBtn.disabled = true;
       startBtn.disabled = false;
       log("❌ Transfer cancelled");
