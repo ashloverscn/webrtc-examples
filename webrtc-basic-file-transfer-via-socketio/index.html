@@ -40,7 +40,7 @@
     const CHUNK_SIZE = 64 * 1024, ACK_TIMEOUT = 5000;
     let pc, dc, targetPeer = "", registry = {};
     let fileObj, reader, offset = 0, awaitingAck = false, ackTimer = null;
-    let sending = false, incoming = null, recChunks = [], incomingOffset = 0;
+    let sending = false, incoming = null, recChunks = [], incomingOffset = 0, receiving = false;
 
     function log(msg) {
       terminal.innerText += msg + "\n";
@@ -136,6 +136,7 @@
         startBtn.disabled = false;
       };
       dc.onclose = () => log("=== DataChannel Closed ===");
+
       dc.onmessage = event => {
         const data = event.data;
         if (typeof data === "string") {
@@ -148,6 +149,8 @@
             incoming = { name: msg.name, size: msg.size };
             recChunks = [];
             incomingOffset = 0;
+            receiving = true;
+            cancelBtn.disabled = false;
             log(`⬇️ Receiving ${incoming.name} (${incomingOffset}/${incoming.size} bytes, 0.0%)`);
             dc.send(JSON.stringify({ type: "ack", offset: 0 }));
           } else if (msg.type === "ack" && sending) {
@@ -157,11 +160,13 @@
             if (msg.offset >= fileObj.size) {
               dc.send(JSON.stringify({ type: "file-complete" }));
               sending = false;
-              log("✅ Upload complete");
-              startBtn.disabled = false;
               cancelBtn.disabled = true;
+              startBtn.disabled = false;
+              log("✅ Upload complete");
             } else sendNextChunk();
           } else if (msg.type === "file-complete") {
+            receiving = false;
+            cancelBtn.disabled = true;
             log("⬇️ File transfer complete");
             const blob = new Blob(recChunks);
             const a = document.createElement("a");
@@ -170,14 +175,15 @@
             a.click();
             log(`✅ Saved ${incoming.name}`);
             incoming = null;
-            cancelBtn.disabled = true;
-            startBtn.disabled = false;
           } else if (msg.type === "cancel") {
-            log("❌ Transfer was cancelled by sender/receiver");
             sending = false;
+            receiving = false;
+            offset = 0;
             incoming = null;
-            startBtn.disabled = false;
             cancelBtn.disabled = true;
+            startBtn.disabled = false;
+            clearTimeout(ackTimer);
+            log("❌ Transfer cancelled by peer");
           }
         } else {
           recChunks.push(data);
@@ -212,12 +218,17 @@
     };
 
     cancelBtn.onclick = () => {
+      if (dc && dc.readyState === "open") {
+        dc.send(JSON.stringify({ type: "cancel" }));
+      }
       sending = false;
+      receiving = false;
+      offset = 0;
+      incoming = null;
       clearTimeout(ackTimer);
-      dc.send(JSON.stringify({ type: "cancel" }));
-      log("❌ Transfer cancelled");
       cancelBtn.disabled = true;
       startBtn.disabled = false;
+      log("❌ Transfer cancelled");
     };
 
     function retryChunk() {
