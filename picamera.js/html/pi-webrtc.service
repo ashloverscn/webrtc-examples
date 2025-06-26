@@ -1,0 +1,32 @@
+[Unit]
+Description= The p2p camera via webrtc.
+After=network-online.target pulseaudio.service
+
+[Service]
+Type=simple
+WorkingDirectory=/usr/bin/
+ExecStart=/usr/bin/pi-webrtc \
+    --camera=libcamera:0 \
+    --fps=30 \
+    --width=1280 \
+    --height=960 \
+    --http-port=8080 \
+    --use-mqtt \
+    --mqtt-host=e5122a5328ea4986a0295fa6e037655a.s2.eu.hivemq.cloud \
+    --mqtt-port=8883 \
+    --mqtt-username=admin \
+    --mqtt-password=admin1234S \
+    --uid=4a40be90-f177-4323-8712-05c11d67b0b1 \
+    --use-websocket \
+    --use-tls \
+    --ws-host=free1-api.picamera.live \
+    --ws-key=APIz3LVTsM2bmNi \
+    --ws-room=the-room-name
+    --no-audio \
+    --hw-accel # Only Pi Zero 2W, 3B, 4B support hw encoding
+
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
