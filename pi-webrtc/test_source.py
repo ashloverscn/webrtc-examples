@@ -21,7 +21,7 @@ logger = logging.getLogger("WebRTC-Camera")
 
 # Enable aiortc debug logging
 logging.getLogger('aiortc').setLevel(logging.DEBUG)
-logging.getLogger('aioice').setLevel(logging.DEBUG)  # ICE specific logging
+logging.getLogger('aioice').setLevel(logging.DEBUG)
 
 
 class FakeVideoStreamTrack(MediaStreamTrack):
@@ -47,7 +47,6 @@ class FakeVideoStreamTrack(MediaStreamTrack):
         t = time.time() - self.start_time
         offset = int(t * 50) % self.width
         
-        # Horizontal gradient with movement
         for x in range(self.width):
             hue = ((x + offset) % 180) / 180.0
             h = hue * 6
@@ -69,27 +68,23 @@ class FakeVideoStreamTrack(MediaStreamTrack):
             
             frame[:, x] = [int(b), int(g), int(r)]
         
-        # Add moving circle
         center_x = int(self.width/2 + np.sin(t * 2) * 150)
         center_y = int(self.height/2 + np.cos(t * 1.5) * 100)
         cv2.circle(frame, (center_x, center_y), 50, (255, 255, 255), -1)
         cv2.circle(frame, (center_x, center_y), 50, (0, 0, 0), 3)
         
-        # Add rotating rectangle
         angle = t * 30
         rect_size = 80
         rect_pts = cv2.boxPoints(((self.width//2, self.height//2), (rect_size, rect_size), angle))
         rect_pts = np.int0(rect_pts)
         cv2.drawContours(frame, [rect_pts], 0, (255, 255, 255), 2)
         
-        # Add grid overlay
         grid_spacing = 80
         for i in range(0, self.width, grid_spacing):
             cv2.line(frame, (i, 0), (i, self.height), (50, 50, 50), 1)
         for i in range(0, self.height, grid_spacing):
             cv2.line(frame, (0, i), (self.width, i), (50, 50, 50), 1)
         
-        # Text overlays
         cv2.putText(frame, f"CAM: {self.camera_id}", (20, 40), 
                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
         
@@ -124,7 +119,6 @@ class FakeVideoStreamTrack(MediaStreamTrack):
         video_frame.pts = pts
         video_frame.time_base = time_base
         
-        # Calculate actual FPS
         current_time = time.time()
         frame_time = current_time - self.last_frame_time
         self.frame_times.append(frame_time)
@@ -135,15 +129,12 @@ class FakeVideoStreamTrack(MediaStreamTrack):
         if self.frame_count % 30 == 0:
             avg_frame_time = sum(self.frame_times) / len(self.frame_times)
             actual_fps = 1.0 / avg_frame_time if avg_frame_time > 0 else 0
-            logger.debug(f"🎥 Frame {self.frame_count} generated | Actual FPS: {actual_fps:.2f} | "
-                        f"Frame time: {frame_time*1000:.1f}ms")
+            logger.debug(f"🎥 Frame {self.frame_count} generated | Actual FPS: {actual_fps:.2f}")
         
-        # Frame rate control
         expected_time = self.frame_count / self.fps
         actual_time = time.time() - self.start_time
         if actual_time < expected_time:
             sleep_time = expected_time - actual_time
-            logger.debug(f"⏱️  Sleeping {sleep_time*1000:.1f}ms to maintain FPS")
             await asyncio.sleep(sleep_time)
         
         return video_frame
@@ -160,6 +151,9 @@ class RemoteCameraSource:
         self.peer_id = f"camera_{uuid.uuid4().hex[:6]}"
         self.camera_id = camera_id or f"fake_{uuid.uuid4().hex[:4]}"
         self.verbose_ice = verbose_ice
+        
+        # Store the main event loop reference for thread-safe scheduling
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         
         # MQTT setup
         self.broker_url = "e5122a5328ea4986a0295fa6e037655a.s2.eu.hivemq.cloud"
@@ -193,6 +187,25 @@ class RemoteCameraSource:
         
         self.setup_mqtt()
         logger.info(f"📹 RemoteCameraSource initialized | Peer ID: {self.peer_id}")
+        
+    def set_event_loop(self, loop: asyncio.AbstractEventLoop):
+        """Store reference to the main event loop for thread-safe operations"""
+        self._loop = loop
+        logger.debug(f"Event loop set: {loop}")
+        
+    def _run_coroutine_threadsafe(self, coro):
+        """Helper to run coroutine from MQTT thread in the main event loop"""
+        if self._loop is None:
+            logger.error("❌ No event loop set! Cannot schedule coroutine.")
+            return None
+        
+        try:
+            future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+            logger.debug(f"✅ Scheduled coroutine in main loop: {coro.__name__}")
+            return future
+        except Exception as e:
+            logger.error(f"❌ Failed to schedule coroutine: {e}")
+            return None
         
     def setup_mqtt(self):
         self.mqtt_client.on_connect = self.on_mqtt_connect
@@ -236,6 +249,7 @@ class RemoteCameraSource:
         logger.warning(f"⚠️ MQTT Disconnected | Result code: {rc}")
         
     def on_mqtt_message(self, client, userdata, msg):
+        """Handle MQTT messages - runs in MQTT thread, use thread-safe scheduling"""
         try:
             payload = json.loads(msg.payload.decode())
             logger.debug(f"📨 MQTT Message | Topic: {msg.topic} | Payload: {json.dumps(payload, indent=2)}")
@@ -250,15 +264,16 @@ class RemoteCameraSource:
             
             logger.info(f"📥 SIGNALING | {msg_type.upper()} from viewer {from_peer}")
             
+            # Use thread-safe scheduling instead of create_task
             if msg_type == "view_request":
                 self.viewer_id = from_peer
-                asyncio.create_task(self.handle_view_request())
+                self._run_coroutine_threadsafe(self.handle_view_request())
             elif msg_type == "answer":
-                asyncio.create_task(self.handle_answer(data))
+                self._run_coroutine_threadsafe(self.handle_answer(data))
             elif msg_type == "ice":
                 self.ice_candidates_received += 1
                 logger.info(f"🧊 ICE Candidate received (#{self.ice_candidates_received})")
-                asyncio.create_task(self.handle_remote_ice(data))
+                self._run_coroutine_threadsafe(self.handle_remote_ice(data))
             else:
                 logger.warning(f"⚠️ Unknown message type: {msg_type}")
                 
@@ -269,7 +284,6 @@ class RemoteCameraSource:
         """Handle a viewer requesting to watch our camera"""
         logger.info(f"🎥 Viewer {self.viewer_id} requested stream")
         
-        # Create peer connection with detailed config
         config = {
             "iceServers": [
                 {"urls": "stun:stun.l.google.com:19302"},
@@ -284,12 +298,10 @@ class RemoteCameraSource:
         self.pc = RTCPeerConnection(configuration=config)
         logger.info(f"🔧 RTCPeerConnection created | Config: {json.dumps(config, indent=2)}")
         
-        # Add video track
         self.local_track = FakeVideoStreamTrack(self.camera_id)
         self.pc.addTrack(self.local_track)
         logger.info("➕ Video track added to peer connection")
         
-        # Create data channel
         self.dc = self.pc.createDataChannel("camera_control", ordered=True)
         self.setup_data_channel()
         logger.info("📡 Data channel 'camera_control' created")
@@ -368,13 +380,11 @@ class RemoteCameraSource:
         async def on_datachannel(channel):
             logger.info(f"📨 New data channel: {channel.label}")
         
-        # Create offer
         logger.info("📝 Creating offer...")
         offer = await self.pc.createOffer()
         await self.pc.setLocalDescription(offer)
         logger.info(f"📤 Local description set | Type: {offer.type} | SDP length: {len(offer.sdp)} chars")
         
-        # Log SDP details
         sdp_lines = offer.sdp.split('\n')
         logger.debug(f"SDP Preview:\n" + '\n'.join(sdp_lines[:20]) + "\n...")
         
@@ -475,7 +485,6 @@ class RemoteCameraSource:
             await self.pc.setRemoteDescription(answer)
             logger.info("✅ Remote description (answer) set successfully")
             
-            # Log remote SDP info
             sdp_lines = answer.sdp.split('\n')
             logger.debug(f"Remote SDP Preview:\n" + '\n'.join(sdp_lines[:15]) + "\n...")
             
@@ -542,7 +551,14 @@ class RemoteCameraSource:
         """Disconnect and cleanup"""
         logger.info("🛑 Disconnecting...")
         self.running = False
-        asyncio.create_task(self.cleanup())
+        
+        # Use thread-safe scheduling for cleanup if we have a loop
+        if self._loop:
+            asyncio.run_coroutine_threadsafe(self.cleanup(), self._loop)
+        else:
+            # Fallback: create new event loop for cleanup
+            asyncio.run(self.cleanup())
+            
         self.mqtt_client.disconnect()
         logger.info("👋 Disconnected")
         
@@ -581,13 +597,17 @@ async def main():
     print("  • Synthetic video test pattern (no camera needed)")
     print("  • Detailed ICE and connection state logging")
     print("  • Real-time statistics and debugging info")
-    print("  • Verbose MQTT and WebRTC signaling logs")
+    print("  • Thread-safe async operations")
     print("="*70 + "\n")
     
-    # Set logging level based on preference
-    # logging.getLogger().setLevel(logging.DEBUG)  # Uncomment for maximum verbosity
+    # Get the event loop
+    loop = asyncio.get_running_loop()
     
     camera = RemoteCameraSource(verbose_ice=True)
+    
+    # IMPORTANT: Set the event loop reference for thread-safe operations
+    camera.set_event_loop(loop)
+    
     camera.connect()
     
     # Start status printer
