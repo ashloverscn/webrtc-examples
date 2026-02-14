@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Socket.IO Signal Test - Fixed</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2em;
+            margin-bottom: 10px;
+        }
+
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            padding: 20px;
+            background: #f8f9fa;
+        }
+
+        .status-card {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            border-left: 4px solid #ddd;
+        }
+
+        .status-card.connected {
+            border-left-color: #28a745;
+        }
+
+        .status-card.error {
+            border-left-color: #dc3545;
+        }
+
+        .status-card.warning {
+            border-left-color: #ffc107;
+        }
+
+        .status-label {
+            font-size: 0.85em;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 5px;
+        }
+
+        .status-value {
+            font-size: 1.3em;
+            font-weight: 600;
+            color: #2c3e50;
+            word-break: break-all;
+        }
+
+        .controls {
+            padding: 20px;
+            background: white;
+            border-bottom: 1px solid #e9ecef;
+        }
+
+        .control-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+        }
+
+        input[type="text"] {
+            flex: 1;
+            min-width: 200px;
+            padding: 12px;
+            border: 2px solid #e9ecef;
+            border-radius: 8px;
+            font-size: 1em;
+            transition: border-color 0.3s;
+        }
+
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.3s;
+            font-size: 0.95em;
+        }
+
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-danger {
+            background: #dc3545;
+            color: white;
+        }
+
+        .btn-danger:hover:not(:disabled) {
+            background: #c82333;
+        }
+
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .log-container {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+            height: 400px;
+            overflow-y: auto;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.9em;
+            line-height: 1.6;
+        }
+
+        .log-entry {
+            margin: 4px 0;
+            padding: 6px 12px;
+            border-radius: 4px;
+            animation: slideIn 0.3s ease;
+            border-left: 3px solid transparent;
+        }
+
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateX(-10px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+
+        .log-entry.connect { background: rgba(40, 167, 69, 0.1); border-left-color: #28a745; color: #98c379; }
+        .log-entry.disconnect { background: rgba(220, 53, 69, 0.1); border-left-color: #dc3545; color: #e06c75; }
+        .log-entry.error { background: rgba(220, 53, 69, 0.1); border-left-color: #dc3545; color: #e06c75; }
+        .log-entry.signal { background: rgba(102, 126, 234, 0.1); border-left-color: #667eea; color: #61afef; }
+        .log-entry.peer { background: rgba(255, 193, 7, 0.1); border-left-color: #ffc107; color: #e5c07b; }
+        .log-entry.info { background: rgba(108, 117, 125, 0.1); border-left-color: #6c757d; color: #abb2bf; }
+
+        .timestamp {
+            color: #5c6370;
+            font-size: 0.85em;
+            margin-right: 8px;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.75em;
+            font-weight: 600;
+            margin-left: 8px;
+        }
+
+        .badge-success { background: #28a745; color: white; }
+        .badge-danger { background: #dc3545; color: white; }
+        .badge-warning { background: #ffc107; color: #212529; }
+
+        .stats-bar {
+            display: flex;
+            gap: 20px;
+            padding: 15px 20px;
+            background: #2d3748;
+            color: white;
+            font-size: 0.9em;
+        }
+
+        .stat-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .stat-number {
+            font-weight: bold;
+            color: #48bb78;
+            font-size: 1.2em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔌 Socket.IO Signal Tester</h1>
+            <p>WebRTC Signaling Server Connection Test</p>
+        </div>
+
+        <div class="status-grid">
+            <div class="status-card" id="statusCard">
+                <div class="status-label">Connection Status</div>
+                <div class="status-value" id="statusText">Disconnected</div>
+            </div>
+            <div class="status-card">
+                <div class="status-label">Socket ID</div>
+                <div class="status-value" id="socketId">N/A</div>
+            </div>
+            <div class="status-card">
+                <div class="status-label">Current Room</div>
+                <div class="status-value" id="roomName">testroom</div>
+            </div>
+            <div class="status-card">
+                <div class="status-label">Tracked Peer</div>
+                <div class="status-value" id="trackedPeer">None</div>
+            </div>
+        </div>
+
+        <div class="controls">
+            <div class="control-group">
+                <input type="text" id="serverUrl" value="https://ash-temp-new-52157.portmap.host:52157" placeholder="Server URL">
+                <input type="text" id="roomInput" value="testroom" placeholder="Room name">
+            </div>
+            <div class="control-group">
+                <button class="btn-primary" id="connectBtn" onclick="connect()">Connect</button>
+                <button class="btn-danger" id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
+                <button class="btn-secondary" onclick="clearLogs()">Clear Logs</button>
+                <button class="btn-primary" onclick="sendTestSignal()" id="signalBtn" disabled>Send Test Signal</button>
+            </div>
+            <div class="control-group">
+                <input type="text" id="customEvent" placeholder="Custom event name" value="message" style="flex: 0.3;">
+                <input type="text" id="customData" placeholder='JSON data (e.g., {"type":"offer"})' style="flex: 0.7;">
+                <button class="btn-primary" onclick="emitCustomEvent()" id="customEmitBtn" disabled>Emit</button>
+            </div>
+        </div>
+
+        <div class="stats-bar">
+            <div class="stat-item">
+                Signals Sent: <span class="stat-number" id="signalsSent">0</span>
+            </div>
+            <div class="stat-item">
+                Signals Received: <span class="stat-number" id="signalsReceived">0</span>
+            </div>
+            <div class="stat-item">
+                Peers Tracked: <span class="stat-number" id="peersCount">0</span>
+            </div>
+            <div class="stat-item">
+                Last Activity: <span id="lastActivity">-</span>
+            </div>
+        </div>
+
+        <div class="log-container" id="logContainer">
+            <div class="log-entry info">
+                <span class="timestamp" id="initTime"></span>
+                Ready to connect. Click "Connect" to start.
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let socket = null;
+        let trackedPeerId = null;
+        let stats = {
+            sent: 0,
+            received: 0,
+            peers: new Set()
+        };
+
+        document.getElementById('initTime').textContent = new Date().toLocaleTimeString();
+
+        function updateTime() {
+            document.getElementById('lastActivity').textContent = new Date().toLocaleTimeString();
+        }
+
+        function log(message, type = 'info', data = null) {
+            const container = document.getElementById('logContainer');
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            
+            const timestamp = new Date().toLocaleTimeString();
+            let content = `<span class="timestamp">[${timestamp}]</span> ${message}`;
+            
+            if (data) {
+                const dataStr = typeof data === 'object' ? JSON.stringify(data, null, 2) : data;
+                content += `<div style="margin-left: 20px; margin-top: 4px; color: #9ca3af; font-size: 0.9em;">${dataStr}</div>`;
+            }
+            
+            entry.innerHTML = content;
+            container.appendChild(entry);
+            container.scrollTop = container.scrollHeight;
+            updateTime();
+        }
+
+        function updateStatus(status, type = 'info') {
+            const card = document.getElementById('statusCard');
+            const text = document.getElementById('statusText');
+            
+            text.textContent = status;
+            card.className = 'status-card';
+            
+            if (type === 'connected') card.classList.add('connected');
+            else if (type === 'error') card.classList.add('error');
+            else if (type === 'warning') card.classList.add('warning');
+        }
+
+        function updateStats() {
+            document.getElementById('signalsSent').textContent = stats.sent;
+            document.getElementById('signalsReceived').textContent = stats.received;
+            document.getElementById('peersCount').textContent = stats.peers.size;
+        }
+
+        function connect() {
+            const serverUrl = document.getElementById('serverUrl').value.trim();
+            const room = document.getElementById('roomInput').value.trim() || 'testroom';
+            
+            document.getElementById('roomName').textContent = room;
+            
+            log(`Connecting to ${serverUrl}...`, 'info');
+            updateStatus('Connecting...', 'warning');
+
+            try {
+                // Using the exact working configuration from your example
+                socket = io(serverUrl, {
+                    transports: ["websocket"],
+                    reconnection: true,
+                    reconnectionAttempts: 5,
+                    reconnectionDelay: 1000
+                });
+
+                socket.on("connect", () => {
+                    updateStatus('Connected ✅', 'connected');
+                    document.getElementById('socketId').textContent = socket.id;
+                    log('Connected successfully', 'connect', { socketId: socket.id });
+                    
+                    // Join room
+                    socket.emit("join", room);
+                    log(`Joined room: ${room}`, 'info');
+                    
+                    // Enable controls
+                    document.getElementById('connectBtn').disabled = true;
+                    document.getElementById('disconnectBtn').disabled = false;
+                    document.getElementById('signalBtn').disabled = false;
+                    document.getElementById('customEmitBtn').disabled = false;
+                    
+                    // Auto-send test signal after delay
+                    setTimeout(() => {
+                        if (socket && socket.connected) {
+                            sendTestSignal();
+                        }
+                    }, 1500);
+                });
+
+                socket.on("disconnect", (reason) => {
+                    updateStatus('Disconnected ❌', 'error');
+                    log(`Disconnected: ${reason}`, 'disconnect');
+                    resetUI();
+                });
+
+                socket.on("connect_error", (err) => {
+                    updateStatus('Error ❌', 'error');
+                    log(`Connection error: ${err.message}`, 'error');
+                    resetUI();
+                });
+
+                socket.on("reconnect", (attemptNumber) => {
+                    log(`Reconnected after ${attemptNumber} attempts`, 'connect');
+                });
+
+                socket.on("reconnect_attempt", (attemptNumber) => {
+                    log(`Reconnection attempt ${attemptNumber}...`, 'warning');
+                });
+
+                // Peer events
+                socket.on("peer-joined", (peerId) => {
+                    trackedPeerId = peerId;
+                    stats.peers.add(peerId);
+                    document.getElementById('trackedPeer').textContent = peerId;
+                    log(`Peer joined: ${peerId}`, 'peer');
+                    updateStats();
+                    
+                    // Check presence
+                    socket.emit("presence-check", peerId);
+                });
+
+                socket.on("peer-left", (peerId) => {
+                    stats.peers.delete(peerId);
+                    log(`Peer left: ${peerId}`, 'peer');
+                    updateStats();
+                    
+                    if (trackedPeerId === peerId) {
+                        document.getElementById('trackedPeer').textContent = 'None';
+                        trackedPeerId = null;
+                    }
+                });
+
+                // Signal events
+                socket.on("signal", ({ from, signalData }) => {
+                    stats.received++;
+                    if (!trackedPeerId) {
+                        trackedPeerId = from;
+                        stats.peers.add(from);
+                        document.getElementById('trackedPeer').textContent = from;
+                    }
+                    log(`Signal received from ${from}`, 'signal', signalData);
+                    updateStats();
+                });
+
+                socket.on("presence-response", ({ peerId, isOnline }) => {
+                    log(`Presence check: ${peerId} is ${isOnline ? 'online' : 'offline'}`, 'info');
+                });
+
+                // Generic event catcher for debugging
+                socket.onAny((eventName, ...args) => {
+                    if (!['connect', 'disconnect', 'signal', 'peer-joined', 'peer-left', 'presence-response'].includes(eventName)) {
+                        log(`Event: ${eventName}`, 'info', args[0]);
+                    }
+                });
+
+            } catch (error) {
+                log(`Failed to connect: ${error.message}`, 'error');
+                updateStatus('Failed ❌', 'error');
+            }
+        }
+
+        function disconnect() {
+            if (socket) {
+                socket.disconnect();
+                socket = null;
+            }
+            resetUI();
+            log('Manually disconnected', 'disconnect');
+        }
+
+        function resetUI() {
+            document.getElementById('connectBtn').disabled = false;
+            document.getElementById('disconnectBtn').disabled = true;
+            document.getElementById('signalBtn').disabled = true;
+            document.getElementById('customEmitBtn').disabled = true;
+            document.getElementById('socketId').textContent = 'N/A';
+            document.getElementById('trackedPeer').textContent = 'None';
+            trackedPeerId = null;
+            stats.peers.clear();
+            updateStats();
+        }
+
+        function sendTestSignal() {
+            if (!socket || !socket.connected) {
+                log('Not connected', 'error');
+                return;
+            }
+            
+            const room = document.getElementById('roomInput').value.trim() || 'testroom';
+            const fakeSignal = { 
+                type: "test-offer", 
+                sdp: "v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\n",
+                timestamp: Date.now()
+            };
+            
+            socket.emit("signal", { room, signalData: fakeSignal });
+            stats.sent++;
+            updateStats();
+            log(`Sent test signal to room: ${room}`, 'signal', fakeSignal);
+        }
+
+        function emitCustomEvent() {
+            if (!socket || !socket.connected) {
+                log('Not connected', 'error');
+                return;
+            }
+            
+            const eventName = document.getElementById('customEvent').value.trim() || 'message';
+            const dataInput = document.getElementById('customData').value.trim();
+            
+            let data;
+            try {
+                data = dataInput ? JSON.parse(dataInput) : {};
+            } catch (e) {
+                data = { text: dataInput };
+            }
+            
+            const room = document.getElementById('roomInput').value.trim() || 'testroom';
+            
+            // Try different emission patterns
+            if (eventName === 'signal') {
+                socket.emit('signal', { room, signalData: data });
+            } else if (eventName === 'join') {
+                socket.emit('join', data.room || room);
+            } else {
+                socket.emit(eventName, { room, ...data });
+            }
+            
+            stats.sent++;
+            updateStats();
+            log(`Emitted "${eventName}"`, 'signal', data);
+        }
+
+        function clearLogs() {
+            const container = document.getElementById('logContainer');
+            container.innerHTML = `
+                <div class="log-entry info">
+                    <span class="timestamp">${new Date().toLocaleTimeString()}</span>
+                    Logs cleared.
+                </div>
+            `;
+        }
+
+        // Presence check interval
+        setInterval(() => {
+            if (socket && socket.connected && trackedPeerId) {
+                socket.emit("presence-check", trackedPeerId);
+            }
+        }, 5000);
+
+        // Auto-connect on load (optional)
+        // window.addEventListener('load', connect);
+    </script>
+</body>
+</html>
