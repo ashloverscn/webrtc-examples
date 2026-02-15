@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>WebRTC Terminal Controller</title>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      background: #0a0a0a;
+      color: #00ff00;
+      font-family: 'Courier New', monospace;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* Header */
+    .header {
+      background: #111;
+      padding: 10px 20px;
+      border-bottom: 2px solid #00ff00;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .header h1 {
+      font-size: 18px;
+      text-shadow: 0 0 10px #00ff00;
+    }
+
+    .status {
+      display: flex;
+      gap: 20px;
+      font-size: 12px;
+    }
+
+    .status-indicator {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      margin-right: 5px;
+    }
+
+    .status-online { background: #00ff00; box-shadow: 0 0 5px #00ff00; }
+    .status-offline { background: #ff0000; box-shadow: 0 0 5px #ff0000; }
+    .status-connecting { background: #ffff00; box-shadow: 0 0 5px #ffff00; animation: pulse 1s infinite; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    /* Main Layout */
+    .container {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* Sidebar - Peer List */
+    .sidebar {
+      width: 250px;
+      background: #111;
+      border-right: 1px solid #333;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .sidebar-header {
+      padding: 15px;
+      background: #1a1a1a;
+      border-bottom: 1px solid #333;
+      font-weight: bold;
+      font-size: 14px;
+    }
+
+    .peer-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px;
+    }
+
+    .peer-item {
+      padding: 10px;
+      margin-bottom: 5px;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .peer-item:hover {
+      background: #222;
+      border-color: #00ff00;
+    }
+
+    .peer-item.selected {
+      background: #003300;
+      border-color: #00ff00;
+    }
+
+    .peer-item.me {
+      opacity: 0.5;
+      cursor: default;
+    }
+
+    .peer-item.offline {
+      opacity: 0.3;
+      text-decoration: line-through;
+    }
+
+    .peer-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #00ff00;
+    }
+
+    .peer-dot.offline { background: #ff0000; }
+    .peer-dot.me { background: #888; }
+
+    .peer-name {
+      flex: 1;
+      font-size: 13px;
+    }
+
+    .peer-type {
+      font-size: 10px;
+      color: #888;
+      background: #000;
+      padding: 2px 6px;
+      border-radius: 3px;
+    }
+
+    /* Main Content */
+    .main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: #0a0a0a;
+    }
+
+    /* Toolbar */
+    .toolbar {
+      padding: 10px 20px;
+      background: #111;
+      border-bottom: 1px solid #333;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    button {
+      background: #1a1a1a;
+      color: #00ff00;
+      border: 1px solid #00ff00;
+      padding: 8px 16px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 12px;
+      transition: all 0.2s;
+    }
+
+    button:hover:not(:disabled) {
+      background: #00ff00;
+      color: #000;
+    }
+
+    button:disabled {
+      opacity: 0.3;
+      cursor: not-allowed;
+      border-color: #555;
+      color: #555;
+    }
+
+    .btn-danger {
+      border-color: #ff0000;
+      color: #ff0000;
+    }
+
+    .btn-danger:hover:not(:disabled) {
+      background: #ff0000;
+      color: #fff;
+    }
+
+    /* Terminal Output */
+    .terminal-container {
+      flex: 1;
+      padding: 20px;
+      overflow-y: auto;
+      background: #000;
+    }
+
+    .terminal-output {
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      line-height: 1.6;
+      font-size: 13px;
+    }
+
+    .terminal-line {
+      margin-bottom: 4px;
+      padding: 2px 0;
+    }
+
+    .terminal-line.sent {
+      color: #00ff00;
+    }
+
+    .terminal-line.received {
+      color: #00ffff;
+    }
+
+    .terminal-line.system {
+      color: #ffff00;
+    }
+
+    .terminal-line.error {
+      color: #ff0000;
+    }
+
+    .terminal-line.info {
+      color: #888;
+    }
+
+    /* Input Area */
+    .input-area {
+      padding: 15px 20px;
+      background: #111;
+      border-top: 1px solid #333;
+      display: flex;
+      gap: 10px;
+    }
+
+    .input-wrapper {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      background: #000;
+      border: 1px solid #333;
+      padding: 0 15px;
+    }
+
+    .input-wrapper:focus-within {
+      border-color: #00ff00;
+    }
+
+    .prompt {
+      color: #00ff00;
+      margin-right: 10px;
+      font-weight: bold;
+    }
+
+    input[type="text"] {
+      flex: 1;
+      background: transparent;
+      border: none;
+      color: #00ff00;
+      font-family: inherit;
+      font-size: 14px;
+      outline: none;
+      padding: 10px 0;
+    }
+
+    /* Connection Info Panel */
+    .info-panel {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: #111;
+      border: 2px solid #00ff00;
+      padding: 30px;
+      border-radius: 8px;
+      display: none;
+      z-index: 1000;
+      box-shadow: 0 0 50px rgba(0, 255, 0, 0.2);
+    }
+
+    .info-panel.active {
+      display: block;
+    }
+
+    .overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.8);
+      display: none;
+      z-index: 999;
+    }
+
+    .overlay.active {
+      display: block;
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: #111;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: #333;
+      border-radius: 4px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: #00ff00;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>🔌 WebRTC Terminal Controller</h1>
+    <div class="status">
+      <span>
+        <span class="status-indicator" id="mqttStatus"></span>
+        MQTT: <span id="mqttText">Connecting...</span>
+      </span>
+      <span>
+        <span class="status-indicator" id="rtcStatus"></span>
+        WebRTC: <span id="rtcText">Disconnected</span>
+      </span>
+      <span>ID: <span id="peerId"></span></span>
+    </div>
+  </div>
+
+  <div class="container">
+    <div class="sidebar">
+      <div class="sidebar-header">
+        📡 Active Peers
+      </div>
+      <div class="peer-list" id="peerList">
+        <!-- Peers populated dynamically -->
+      </div>
+    </div>
+
+    <div class="main">
+      <div class="toolbar">
+        <button id="connectBtn" onclick="initiateConnection()">Connect to Selected</button>
+        <button id="disconnectBtn" onclick="disconnect()" disabled class="btn-danger">Disconnect</button>
+        <button onclick="clearTerminal()">Clear Terminal</button>
+        <button onclick="showInfo()">Connection Info</button>
+      </div>
+
+      <div class="terminal-container" id="terminalContainer">
+        <div class="terminal-output" id="terminalOutput"></div>
+      </div>
+
+      <div class="input-area">
+        <div class="input-wrapper">
+          <span class="prompt">➜</span>
+          <input type="text" id="commandInput" placeholder="Type command or message..."
+                 onkeydown="handleInput(event)" autocomplete="off">
+        </div>
+        <button onclick="sendCommand()" id="sendBtn" disabled>Send</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="overlay" id="overlay" onclick="hideInfo()"></div>
+  <div class="info-panel" id="infoPanel">
+    <h3 style="margin-bottom: 15px; color: #00ff00;">Connection Information</h3>
+    <p><strong>Your Peer ID:</strong> <span id="infoPeerId"></span></p>
+    <p><strong>Target Peer:</strong> <span id="infoTarget"></span></p>
+    <p><strong>MQTT Broker:</strong> <span id="infoBroker"></span></p>
+    <p><strong>Signaling Topic:</strong> <span id="infoTopic"></span></p>
+    <p><strong>DataChannel State:</strong> <span id="infoDataChannel"></span></p>
+    <p><strong>ICE Connection:</strong> <span id="infoIce"></span></p>
+    <br>
+    <button onclick="hideInfo()">Close</button>
+  </div>
+
+  <script>
+    // Configuration (same as Python terminal)
+    const CONFIG = {
+      brokerURL: 'wss://e5122a5328ea4986a0295fa6e037655a.s2.eu.hivemq.cloud:8884/mqtt',
+      topic: 'webrtc/signaling',
+      username: 'admin',
+      password: 'admin1234S'
+    };
+
+    // State
+    const peerId = 'web_' + Math.random().toString(36).substr(2, 6);
+    let selectedPeer = null;
+    let targetPeerId = null;
+    let pc = null;
+    let dc = null;
+    let client = null;
+    const peerRegistry = {};
+    let isConnecting = false;
+
+    // UI Elements
+    const terminalOutput = document.getElementById('terminalOutput');
+    const peerListEl = document.getElementById('peerList');
+    const commandInput = document.getElementById('commandInput');
+    const connectBtn = document.getElementById('connectBtn');
+    const disconnectBtn = document.getElementById('disconnectBtn');
+    const sendBtn = document.getElementById('sendBtn');
+    const terminalContainer = document.getElementById('terminalContainer');
+
+    // Initialize
+    document.getElementById('peerId').textContent = peerId;
+    updateStatus('mqtt', 'connecting');
+
+    // Connect to MQTT
+    client = mqtt.connect(CONFIG.brokerURL, {
+      rejectUnauthorized: false,
+      clientId: 'controller_' + peerId,
+      username: CONFIG.username,
+      password: CONFIG.password,
+      protocol: 'wss'
+    });
+
+    client.on('connect', () => {
+      updateStatus('mqtt', 'online');
+      log('System', `Connected to MQTT as ${peerId}`);
+      client.subscribe(CONFIG.topic);
+      announcePresence();
+      setInterval(announcePresence, 1000);
+    });
+
+    client.on('disconnect', () => {
+      updateStatus('mqtt', 'offline');
+      log('Error', 'MQTT disconnected');
+    });
+
+    client.on('message', (topic, payload) => {
+      try {
+        const msg = JSON.parse(payload.toString());
+        handleMessage(msg);
+      } catch (e) {
+        console.error('Invalid message:', e);
+      }
+    });
+
+    function announcePresence() {
+      client.publish(CONFIG.topic, JSON.stringify({
+        type: 'presence',
+        from: peerId
+      }));
+      peerRegistry[peerId] = Date.now();
+      updatePeerList();
+    }
+
+    function handleMessage(msg) {
+      // Update peer registry
+      if (msg.type === 'presence') {
+        peerRegistry[msg.from] = Date.now();
+        updatePeerList();
+        return;
+      }
+
+      // Only handle messages for us
+      if (msg.to !== peerId) return;
+
+      log('System', `Received ${msg.type.toUpperCase()} from ${msg.from}`);
+      targetPeerId = msg.from;
+      updateSelectedPeer(msg.from);
+
+      switch (msg.type) {
+        case 'offer':
+          handleOffer(msg.data);
+          break;
+        case 'answer':
+          handleAnswer(msg.data);
+          break;
+        case 'ice':
+          handleRemoteICE(msg.data);
+          break;
+      }
+    }
+
+    function sendSignal(type, data) {
+      if (!targetPeerId) {
+        log('Error', 'No target peer selected');
+        return;
+      }
+
+      const payload = {
+        type,
+        from: peerId,
+        to: targetPeerId,
+        data
+      };
+
+      client.publish(CONFIG.topic, JSON.stringify(payload));
+      log('System', `Sent ${type.toUpperCase()} to ${targetPeerId}`);
+    }
+
+    // WebRTC Functions
+    async function setupPeerConnection(isOfferer) {
+      if (pc) {
+        pc.close();
+      }
+
+      pc = new RTCPeerConnection({
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+      });
+
+      pc.onicecandidate = (e) => {
+        if (e.candidate) {
+          sendSignal('ice', e.candidate);
+        }
+      };
+
+      pc.onconnectionstatechange = () => {
+        log('System', `Connection state: ${pc.connectionState}`);
+        if (pc.connectionState === 'connected') {
+          updateStatus('rtc', 'online');
+        } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+          updateStatus('rtc', 'offline');
+        }
+      };
+
+      if (isOfferer) {
+        dc = pc.createDataChannel("serial", {
+          ordered: true
+        });
+        setupDataChannel();
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        sendSignal('offer', offer);
+        isConnecting = true;
+      } else {
+        pc.ondatachannel = (e) => {
+          dc = e.channel;
+          setupDataChannel();
+        };
+      }
+    }
+
+    function setupDataChannel() {
+      dc.onopen = () => {
+        log('System', '=== DataChannel Opened ===');
+        updateStatus('rtc', 'online');
+        sendBtn.disabled = false;
+        disconnectBtn.disabled = false;
+        connectBtn.disabled = true;
+        isConnecting = false;
+      };
+
+      dc.onclose = () => {
+        log('System', '=== DataChannel Closed ===');
+        updateStatus('rtc', 'offline');
+        sendBtn.disabled = true;
+        disconnectBtn.disabled = true;
+        connectBtn.disabled = false;
+      };
+
+      dc.onmessage = (event) => {
+        log('Received', event.data);
+      };
+
+      dc.onerror = (err) => {
+        log('Error', `DataChannel error: ${err.message}`);
+      };
+    }
+
+    async function handleOffer(offer) {
+      await setupPeerConnection(false);
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      sendSignal('answer', answer);
+    }
+
+    async function handleAnswer(answer) {
+      await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    }
+
+    async function handleRemoteICE(candidate) {
+      if (pc) {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      }
+    }
+
+    // UI Functions
+    function updatePeerList() {
+      const now = Date.now();
+      peerListEl.innerHTML = '';
+
+      Object.entries(peerRegistry)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .forEach(([pid, lastSeen]) => {
+          const age = now - lastSeen;
+          const isExpired = age > 5000;
+          const isOffline = age > 1000;
+          const isMe = pid === peerId;
+          const isSelected = pid === selectedPeer;
+
+          if (isExpired && !isMe) {
+            delete peerRegistry[pid];
+            return;
+          }
+
+          const div = document.createElement('div');
+          div.className = 'peer-item';
+          if (isMe) div.classList.add('me');
+          if (isOffline && !isMe) div.classList.add('offline');
+          if (isSelected) div.classList.add('selected');
+
+          const dotClass = isMe ? 'me' : (isOffline ? 'offline' : '');
+          const typeLabel = pid.startsWith('web_') ? 'WEB' : 'PY';
+
+          div.innerHTML = `
+            <span class="peer-dot ${dotClass}"></span>
+            <span class="peer-name">${pid}</span>
+            <span class="peer-type">${typeLabel}</span>
+          `;
+
+          if (!isMe) {
+            div.onclick = () => selectPeer(pid);
+          }
+
+          peerListEl.appendChild(div);
+        });
+    }
+
+    function selectPeer(pid) {
+      selectedPeer = pid;
+      targetPeerId = pid;
+      updatePeerList();
+      log('System', `Selected peer: ${pid}`);
+    }
+
+    function updateSelectedPeer(pid) {
+      selectedPeer = pid;
+      updatePeerList();
+    }
+
+    function initiateConnection() {
+      if (!selectedPeer || selectedPeer === peerId) {
+        log('Error', 'Please select a peer first');
+        return;
+      }
+
+      targetPeerId = selectedPeer;
+      log('System', `Initiating connection to ${targetPeerId}...`);
+      setupPeerConnection(true);
+    }
+
+    function disconnect() {
+      if (dc) {
+        dc.close();
+      }
+      if (pc) {
+        pc.close();
+      }
+      dc = null;
+      pc = null;
+      updateStatus('rtc', 'offline');
+      log('System', 'Disconnected');
+    }
+
+    function sendCommand() {
+      const input = commandInput.value.trim();
+      if (!input) return;
+
+      if (dc && dc.readyState === 'open') {
+        dc.send(input);
+        log('Sent', input);
+        commandInput.value = '';
+      } else {
+        log('Error', 'DataChannel not open');
+      }
+    }
+
+    function handleInput(event) {
+      if (event.key === 'Enter') {
+        sendCommand();
+      }
+    }
+
+    function log(type, message) {
+      const line = document.createElement('div');
+      line.className = 'terminal-line';
+
+      const timestamp = new Date().toLocaleTimeString();
+      let cssClass = 'info';
+      let prefix = '[*]';
+
+      switch(type) {
+        case 'Sent':
+          cssClass = 'sent';
+          prefix = '[→]';
+          break;
+        case 'Received':
+          cssClass = 'received';
+          prefix = '[←]';
+          break;
+        case 'Error':
+          cssClass = 'error';
+          prefix = '[✗]';
+          break;
+        case 'System':
+          cssClass = 'system';
+          prefix = '[⚡]';
+          break;
+      }
+
+      line.classList.add(cssClass);
+      line.textContent = `${prefix} [${timestamp}] ${message}`;
+
+      terminalOutput.appendChild(line);
+      terminalContainer.scrollTop = terminalContainer.scrollHeight;
+    }
+
+    function updateStatus(type, status) {
+      const indicator = document.getElementById(type + 'Status');
+      const text = document.getElementById(type + 'Text');
+
+      indicator.className = 'status-indicator status-' + status;
+
+      const labels = {
+        online: 'Connected',
+        offline: 'Disconnected',
+        connecting: 'Connecting...'
+      };
+
+      text.textContent = labels[status] || status;
+    }
+
+    function clearTerminal() {
+      terminalOutput.innerHTML = '';
+      log('System', 'Terminal cleared');
+    }
+
+    function showInfo() {
+      document.getElementById('infoPeerId').textContent = peerId;
+      document.getElementById('infoTarget').textContent = targetPeerId || 'None';
+      document.getElementById('infoBroker').textContent = CONFIG.brokerURL;
+      document.getElementById('infoTopic').textContent = CONFIG.topic;
+      document.getElementById('infoDataChannel').textContent = dc ? dc.readyState : 'N/A';
+      document.getElementById('infoIce').textContent = pc ? pc.iceConnectionState : 'N/A';
+
+      document.getElementById('overlay').classList.add('active');
+      document.getElementById('infoPanel').classList.add('active');
+    }
+
+    function hideInfo() {
+      document.getElementById('overlay').classList.remove('active');
+      document.getElementById('infoPanel').classList.remove('active');
+    }
+
+    // Cleanup on page unload
+    window.onbeforeunload = () => {
+      if (dc) dc.close();
+      if (pc) pc.close();
+      client.end();
+    };
+  </script>
+</body>
+</html>
