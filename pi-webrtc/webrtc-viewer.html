@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>WebRTC Audio/Video via MQTT</title>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+
+  <style>
+    .video-container {
+      display: flex;
+      justify-content: center;
+      margin-top: 20px;
+    }
+    video {
+      width: 100%;
+      max-width: 400px;
+      aspect-ratio: 1 / 1;
+      object-fit: cover;
+      border: 1px solid #ccc;
+      background: black;
+    }
+    #peerList {
+      background: #222;
+      color: #ccc;
+      padding: 10px;
+      margin-top: 10px;
+      border: 1px solid #444;
+      border-radius: 5px;
+    }
+    #peerList ul { list-style: none; padding-left: 0; }
+    #peerList li { cursor: pointer; margin-bottom: 5px; }
+    #peerList li:hover { text-decoration: underline; }
+    #peerList li.me {
+      color: #888;
+      cursor: default;
+      user-select: none;
+      text-decoration: none;
+    }
+    #peerList li.offline {
+      color: #555;
+      font-style: italic;
+    }
+    #toggleBtn {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      padding: 4px 8px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+  </style>
+</head>
+
+<body>
+<button id="toggleBtn" onclick="togglePeerList()">H</button>
+
+<h2>WebRTC Audio/Video Stream (MQTT Signaling)</h2>
+
+<div id="peerList">
+  <strong>Active Peers:</strong>
+  <ul id="peers"></ul>
+</div>
+
+<div class="video-container">
+  <video id="remoteVideo" autoplay playsinline></video>
+</div>
+
+<script>
+  const brokerURL = 'wss://e5122a5328ea4986a0295fa6e037655a.s2.eu.hivemq.cloud:8884/mqtt';
+  const signalingTopic = 'webrtc/signaling';
+
+  const peerId =
+    localStorage.getItem('persistentPeerId') ||
+    'peer_' + Math.random().toString(36).substr(2, 6);
+  localStorage.setItem('persistentPeerId', peerId);
+
+  let targetPeerId = '';
+  let localStream;
+  let pc;
+
+  const peerRegistry = {};
+
+  const client = mqtt.connect(brokerURL, {
+    rejectUnauthorized: false,
+    clientId: 'signaling_' + peerId,
+    username: 'admin',
+    password: 'admin1234S',
+    protocol: 'wss'
+  });
+
+  client.on('connect', () => {
+    client.subscribe(signalingTopic);
+    sendPresence();
+    setInterval(sendPresence, 1000);
+  });
+
+  client.on('message', (topic, payload) => {
+    const msg = JSON.parse(payload.toString());
+
+    if (msg.type === 'presence') {
+      peerRegistry[msg.from] = Date.now();
+      return;
+    }
+
+    if (msg.to !== peerId) return;
+    targetPeerId = msg.from;
+
+    switch (msg.type) {
+      case 'offer': handleOffer(msg.data); break;
+      case 'answer': handleAnswer(msg.data); break;
+      case 'ice': handleRemoteICE(msg.data); break;
+    }
+  });
+
+  function sendPresence() {
+    client.publish(
+      signalingTopic,
+      JSON.stringify({ type: 'presence', from: peerId })
+    );
+  }
+
+  function togglePeerList() {
+    const list = document.getElementById("peerList");
+    const btn = document.getElementById("toggleBtn");
+    const visible = list.style.display !== "none";
+    list.style.display = visible ? "none" : "block";
+    btn.innerText = visible ? "S" : "H";
+  }
+
+  function updatePeerList() {
+    const now = Date.now();
+    const ul = document.getElementById('peers');
+    ul.innerHTML = '';
+
+    const me = document.createElement('li');
+    me.className = 'me';
+    me.textContent = `[me]: ${peerId}`;
+    ul.appendChild(me);
+
+    for (const pid in peerRegistry) {
+      if (pid === peerId) continue;
+      const age = now - peerRegistry[pid];
+      if (age > 5000) { delete peerRegistry[pid]; continue; }
+
+      const li = document.createElement('li');
+      if (age > 1000) {
+        li.className = 'offline';
+        li.textContent = `[disconnected]: ${pid}`;
+      } else {
+        li.textContent = `[online]: ${pid}`;
+        li.onclick = () => {
+          targetPeerId = pid;
+          initiateCall();
+        };
+      }
+      ul.appendChild(li);
+    }
+  }
+  setInterval(updatePeerList, 1000);
+
+  async function getLocalMediaStream() {
+    try {
+      localStream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: true
+      });
+    } catch {
+      localStream = new MediaStream();
+    }
+  }
+
+  async function setupPeerConnection(isOfferer) {
+    pc = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+    });
+
+    localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+
+    pc.ontrack = e => {
+      const rv = document.getElementById("remoteVideo");
+      if (!rv.srcObject) rv.srcObject = e.streams[0];
+    };
+
+    pc.onicecandidate = e => {
+      if (e.candidate) sendSignal('ice', e.candidate);
+    };
+
+    if (isOfferer) {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      sendSignal('offer', offer);
+    }
+  }
+
+  async function initiateCall() {
+    await getLocalMediaStream();
+    await setupPeerConnection(true);
+  }
+
+  async function handleOffer(offer) {
+    await getLocalMediaStream();
+    await setupPeerConnection(false);
+    await pc.setRemoteDescription(new RTCSessionDescription(offer));
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    sendSignal('answer', answer);
+  }
+
+  async function handleAnswer(answer) {
+    await pc.setRemoteDescription(new RTCSessionDescription(answer));
+  }
+
+  function handleRemoteICE(candidate) {
+    pc.addIceCandidate(new RTCIceCandidate(candidate));
+  }
+
+  function sendSignal(type, data) {
+    if (!targetPeerId) return;
+    client.publish(
+      signalingTopic,
+      JSON.stringify({ type, from: peerId, to: targetPeerId, data })
+    );
+  }
+</script>
+</body>
+</html>
