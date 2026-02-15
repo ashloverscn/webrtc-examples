@@ -1,68 +1,130 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>WebRTC Audio/Video via MQTT</title>
+  <meta charset="UTF-8" />
+  <title>WebRTC Video (MQTT Signaling)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
   <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
 
   <style>
-    .video-container {
+    body {
+      margin: 0;
+      padding: 10px;
+      background: #000;
+      color: #ddd;
+      font-family: Arial, sans-serif;
+    }
+
+    h2 {
+      text-align: center;
+      margin: 8px 0 12px;
+      font-size: 1.2em;
+    }
+
+    /* Main wrapper */
+    .app {
       display: flex;
       justify-content: center;
-      margin-top: 20px;
+      width: 100%;
     }
+
+    /* Video + peers column */
+    .media-column {
+      width: 100%;
+      max-width: 420px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
     video {
       width: 100%;
-      max-width: 400px;
       aspect-ratio: 1 / 1;
-      object-fit: cover;
-      border: 1px solid #ccc;
       background: black;
+      border: 1px solid #333;
+      border-radius: 6px;
     }
+
     #peerList {
+      background: #111;
+      border: 1px solid #333;
+      border-radius: 6px;
+      padding: 8px;
+    }
+
+    #peerList strong {
+      display: block;
+      text-align: center;
+      margin-bottom: 6px;
+      font-size: 0.95em;
+    }
+
+    #peerList ul {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+
+    #peerList li {
+      padding: 6px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.9em;
+    }
+
+    #peerList li:hover {
       background: #222;
-      color: #ccc;
-      padding: 10px;
-      margin-top: 10px;
-      border: 1px solid #444;
-      border-radius: 5px;
     }
-    #peerList ul { list-style: none; padding-left: 0; }
-    #peerList li { cursor: pointer; margin-bottom: 5px; }
-    #peerList li:hover { text-decoration: underline; }
+
     #peerList li.me {
-      color: #888;
+      color: #777;
       cursor: default;
-      user-select: none;
-      text-decoration: none;
     }
+
     #peerList li.offline {
       color: #555;
       font-style: italic;
+      cursor: default;
     }
+
     #toggleBtn {
-      position: absolute;
-      top: 10px;
-      right: 10px;
-      padding: 4px 8px;
+      position: fixed;
+      top: 8px;
+      right: 8px;
+      padding: 6px 10px;
       font-weight: bold;
+      border-radius: 4px;
       cursor: pointer;
+      z-index: 10;
+    }
+
+    @media (min-width: 768px) {
+      body {
+        padding: 20px;
+      }
+      .media-column {
+        max-width: 380px;
+      }
     }
   </style>
 </head>
 
 <body>
+
 <button id="toggleBtn" onclick="togglePeerList()">H</button>
 
-<h2>WebRTC Audio/Video Stream (MQTT Signaling)</h2>
+<h2>WebRTC Video Stream (MQTT Signaling)</h2>
 
-<div id="peerList">
-  <strong>Active Peers:</strong>
-  <ul id="peers"></ul>
-</div>
+<div class="app">
+  <div class="media-column">
+    <video id="remoteVideo" autoplay playsinline></video>
 
-<div class="video-container">
-  <video id="remoteVideo" autoplay playsinline></video>
+    <div id="peerList">
+      <strong>Active Peers</strong>
+      <ul id="peers"></ul>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -94,7 +156,7 @@
     setInterval(sendPresence, 1000);
   });
 
-  client.on('message', (topic, payload) => {
+  client.on('message', (_, payload) => {
     const msg = JSON.parse(payload.toString());
 
     if (msg.type === 'presence') {
@@ -105,11 +167,9 @@
     if (msg.to !== peerId) return;
     targetPeerId = msg.from;
 
-    switch (msg.type) {
-      case 'offer': handleOffer(msg.data); break;
-      case 'answer': handleAnswer(msg.data); break;
-      case 'ice': handleRemoteICE(msg.data); break;
-    }
+    if (msg.type === 'offer') handleOffer(msg.data);
+    if (msg.type === 'answer') handleAnswer(msg.data);
+    if (msg.type === 'ice') handleRemoteICE(msg.data);
   });
 
   function sendPresence() {
@@ -122,9 +182,9 @@
   function togglePeerList() {
     const list = document.getElementById("peerList");
     const btn = document.getElementById("toggleBtn");
-    const visible = list.style.display !== "none";
-    list.style.display = visible ? "none" : "block";
-    btn.innerText = visible ? "S" : "H";
+    const hidden = list.style.display === "none";
+    list.style.display = hidden ? "block" : "none";
+    btn.innerText = hidden ? "H" : "S";
   }
 
   function updatePeerList() {
@@ -139,8 +199,12 @@
 
     for (const pid in peerRegistry) {
       if (pid === peerId) continue;
+
       const age = now - peerRegistry[pid];
-      if (age > 5000) { delete peerRegistry[pid]; continue; }
+      if (age > 5000) {
+        delete peerRegistry[pid];
+        continue;
+      }
 
       const li = document.createElement('li');
       if (age > 1000) {
@@ -222,5 +286,6 @@
     );
   }
 </script>
+
 </body>
 </html>
