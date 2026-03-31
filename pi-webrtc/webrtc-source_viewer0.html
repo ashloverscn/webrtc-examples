@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>PiCamera Viewer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js"></script>
+    <style>
+        body { background: #121212; color: white; text-align: center; font-family: sans-serif; }
+        video { width: 80%; max-width: 640px; border: 2px solid #333; margin-top: 20px; background: black; }
+        .btn { padding: 10px 20px; background: #007bff; border: none; color: white; cursor: pointer; border-radius: 5px; }
+        .btn:disabled { background: #444; }
+    </style>
+</head>
+<body>
+    <h1>Pi WebRTC Stream</h1>
+    <p>Status: <span id="stat">Connecting MQTT...</span></p>
+    <button id="startBtn" class="btn" disabled onclick="start()">Start Stream</button><br>
+    <video id="remoteVideo" autoplay playsinline></video>
+
+    <script>
+        const config = { host: "e5122a5328ea4986a0295fa6e037655a.s2.eu.hivemq.cloud", port: 8884, topic: "webrtc/signaling" };
+        const myId = "viewer_" + Math.random().toString(16).slice(2, 8);
+        let camId = null, pc = null, mqtt = new Paho.MQTT.Client(config.host, config.port, myId);
+
+        mqtt.onMessageArrived = (m) => {
+            let p = JSON.parse(m.payloadString);
+            if (p.type === "presence" && !camId) {
+                camId = p.from;
+                document.getElementById('stat').innerText = "Camera Found: " + camId;
+                document.getElementById('startBtn').disabled = false;
+            }
+            if (p.to !== myId) return;
+            if (p.type === "answer") pc.setRemoteDescription(new RTCSessionDescription(p.data));
+            if (p.type === "ice") pc.addIceCandidate(new RTCIceCandidate(p.data));
+        };
+
+        mqtt.connect({ useSSL: true, userName: "admin", password: "admin1234S", 
+            onSuccess: () => { mqtt.subscribe(config.topic); document.getElementById('stat').innerText = "Waiting for Camera..."; } 
+        });
+
+        async function start() {
+            pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+            pc.ontrack = (e) => document.getElementById('remoteVideo').srcObject = e.streams[0];
+            pc.onicecandidate = (e) => e.candidate && send("ice", e.candidate);
+            
+            pc.createDataChannel("control"); // Required for handshake
+            const offer = await pc.createOffer({ offerToReceiveVideo: true });
+            await pc.setLocalDescription(offer);
+            send("offer", { sdp: offer.sdp, type: offer.type });
+        }
+
+        function send(type, data) {
+            let m = new Paho.MQTT.Message(JSON.stringify({ type, from: myId, to: camId, data }));
+            m.destinationName = config.topic;
+            mqtt.send(m);
+        }
+    </script>
+</body>
+</html>

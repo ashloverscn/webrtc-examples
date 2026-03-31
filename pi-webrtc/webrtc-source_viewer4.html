@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>WebRTC Terminal Controller</title>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0a0a0a; color: #00ff00; font-family: 'Courier New', monospace; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+    .header { background: #111; padding: 10px 20px; border-bottom: 2px solid #00ff00; display: flex; justify-content: space-between; align-items: center; }
+    .header h1 { font-size: 18px; text-shadow: 0 0 10px #00ff00; }
+    .status { display: flex; gap: 20px; font-size: 12px; }
+    .status-indicator { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; }
+    .status-online { background: #00ff00; box-shadow: 0 0 5px #00ff00; }
+    .status-offline { background: #ff0000; box-shadow: 0 0 5px #ff0000; }
+    .status-connecting { background: #ffff00; box-shadow: 0 0 5px #ffff00; animation: pulse 1s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+    .container { display: flex; flex: 1; overflow: hidden; }
+    .sidebar { width: 250px; background: #111; border-right: 1px solid #333; display: flex; flex-direction: column; }
+    .sidebar-header { padding: 15px; background: #1a1a1a; border-bottom: 1px solid #333; font-weight: bold; font-size: 14px; }
+    .peer-list { flex: 1; overflow-y: auto; padding: 10px; }
+    .peer-item { padding: 10px; margin-bottom: 5px; background: #1a1a1a; border: 1px solid #333; border-radius: 4px; cursor: pointer; transition: all 0.2s; display: flex; align-items: center; gap: 8px; }
+    .peer-item:hover { background: #222; border-color: #00ff00; }
+    .peer-item.selected { background: #003300; border-color: #00ff00; }
+    .peer-item.me { opacity: 0.5; cursor: default; }
+    .peer-dot { width: 8px; height: 8px; border-radius: 50%; background: #00ff00; }
+    .peer-name { flex: 1; font-size: 13px; }
+    .main { flex: 1; display: flex; flex-direction: column; background: #0a0a0a; }
+    .toolbar { padding: 10px 20px; background: #111; border-bottom: 1px solid #333; display: flex; gap: 10px; align-items: center; }
+    button { background: #1a1a1a; color: #00ff00; border: 1px solid #00ff00; padding: 8px 16px; cursor: pointer; font-family: inherit; font-size: 12px; transition: all 0.2s; }
+    button:hover:not(:disabled) { background: #00ff00; color: #000; }
+    button:disabled { opacity: 0.3; cursor: not-allowed; border-color: #555; color: #555; }
+    .btn-danger { border-color: #ff0000; color: #ff0000; }
+    .btn-danger:hover:not(:disabled) { background: #ff0000; color: #fff; }
+    .terminal-container { flex: 1; padding: 20px; overflow-y: auto; background: #000; }
+    .terminal-output { white-space: pre-wrap; word-wrap: break-word; line-height: 1.6; font-size: 13px; }
+    .terminal-line { margin-bottom: 4px; padding: 2px 0; }
+    .terminal-line.sent { color: #00ff00; }
+    .terminal-line.received { color: #00ffff; }
+    .terminal-line.system { color: #ffff00; }
+    .terminal-line.error { color: #ff0000; }
+    .input-area { padding: 15px 20px; background: #111; border-top: 1px solid #333; display: flex; gap: 10px; }
+    .input-wrapper { flex: 1; display: flex; align-items: center; background: #000; border: 1px solid #333; padding: 0 15px; }
+    .input-wrapper:focus-within { border-color: #00ff00; }
+    .prompt { color: #00ff00; margin-right: 10px; font-weight: bold; }
+    input[type="text"] { flex: 1; background: transparent; border: none; color: #00ff00; font-family: inherit; font-size: 14px; outline: none; padding: 10px 0; }
+    .info-panel { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: #111; border: 2px solid #00ff00; padding: 30px; border-radius: 8px; display: none; z-index: 1000; box-shadow: 0 0 50px rgba(0,255,0,0.2); }
+    .info-panel.active { display: block; }
+    .overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); display: none; z-index: 999; }
+    .overlay.active { display: block; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>🔌 WebRTC Terminal Controller</h1>
+    <div class="status">
+      <span><span class="status-indicator" id="mqttStatus"></span> MQTT: <span id="mqttText">Connecting...</span></span>
+      <span><span class="status-indicator" id="rtcStatus"></span> WebRTC: <span id="rtcText">Disconnected</span></span>
+      <span>ID: <span id="peerIdDisplay"></span></span>
+    </div>
+  </div>
+
+  <div class="container">
+    <div class="sidebar">
+      <div class="sidebar-header">📡 Active Peers</div>
+      <div class="peer-list" id="peerList"></div>
+    </div>
+
+    <div class="main">
+      <div class="toolbar">
+        <button id="connectBtn" onclick="initiateConnection()">Connect to Selected</button>
+        <button id="disconnectBtn" onclick="disconnect()" disabled class="btn-danger">Disconnect</button>
+        <button onclick="clearTerminal()">Clear Terminal</button>
+        <button onclick="showInfo()">Connection Info</button>
+      </div>
+
+      <div class="terminal-container" id="terminalContainer">
+        <div class="terminal-output" id="terminalOutput"></div>
+      </div>
+
+      <div class="input-area">
+        <div class="input-wrapper">
+          <span class="prompt">➜</span>
+          <input type="text" id="commandInput" placeholder="Type command..." onkeydown="handleInput(event)" autocomplete="off">
+        </div>
+        <button onclick="sendCommand()" id="sendBtn" disabled>Send</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="overlay" id="overlay" onclick="hideInfo()"></div>
+  <div class="info-panel" id="infoPanel">
+    <h3 style="margin-bottom: 15px; color: #00ff00;">Connection Details</h3>
+    <p>Target: <span id="infoTarget">None</span></p>
+    <p>RTC State: <span id="infoIce">N/A</span></p>
+    <br>
+    <button onclick="hideInfo()">Close</button>
+  </div>
+
+  <script>
+    const CONFIG = {
+      // BROKER FIX: Added /mqtt path for HiveMQ WebSocket routing
+      brokerURL: 'wss://e5122a5328ea4986a0295fa6e037655a.s2.eu.hivemq.cloud:8884/mqtt',
+      topic: 'webrtc/signaling',
+      username: 'admin',
+      password: 'admin1234S'
+    };
+
+    const peerId = 'web_' + Math.random().toString(36).substr(2, 6);
+    let selectedPeer = null;
+    let targetPeerId = null;
+    let pc = null;
+    let dc = null;
+    let client = null;
+    const peerRegistry = {};
+
+    document.getElementById('peerIdDisplay').textContent = peerId;
+    updateStatus('mqtt', 'connecting');
+
+    // MQTT connection with precise HiveMQ settings
+    client = mqtt.connect(CONFIG.brokerURL, {
+      clientId: 'ctrl_' + peerId,
+      username: CONFIG.username,
+      password: CONFIG.password,
+      protocol: 'wss',
+      clean: true,
+      connectTimeout: 5000
+    });
+
+    client.on('connect', () => {
+      updateStatus('mqtt', 'online');
+      log('System', `MQTT Ready. Listening on ${CONFIG.topic}`);
+      client.subscribe(CONFIG.topic);
+      
+      // Periodically announce presence
+      setInterval(() => {
+        client.publish(CONFIG.topic, JSON.stringify({ type: 'presence', from: peerId }));
+      }, 1000);
+    });
+
+    client.on('message', (topic, payload) => {
+      try {
+        const msg = JSON.parse(payload.toString());
+        
+        if (msg.type === 'presence') {
+          peerRegistry[msg.from] = Date.now();
+          updatePeerList();
+          return;
+        }
+
+        if (msg.to !== peerId) return;
+
+        targetPeerId = msg.from;
+        if (msg.type === 'offer') handleOffer(msg.data);
+        if (msg.type === 'answer') handleAnswer(msg.data);
+        if (msg.type === 'ice') handleRemoteICE(msg.data);
+      } catch (e) { console.error("JSON Error:", e); }
+    });
+
+    client.on('error', (err) => {
+      log('Error', `MQTT: ${err.message}`);
+      updateStatus('mqtt', 'offline');
+    });
+
+    // WebRTC Functions
+    async function setupPeerConnection(isOfferer) {
+      if (pc) pc.close();
+      pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+
+      pc.onicecandidate = (e) => e.candidate && sendSignal('ice', e.candidate);
+      
+      pc.onconnectionstatechange = () => {
+        log('System', `WebRTC: ${pc.connectionState}`);
+        if (pc.connectionState === 'connected') updateStatus('rtc', 'online');
+        if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) updateStatus('rtc', 'offline');
+      };
+
+      if (isOfferer) {
+        // We create the channel if we are the ones connecting
+        dc = pc.createDataChannel("terminal", { ordered: true });
+        setupDataChannelEvents();
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        sendSignal('offer', offer);
+      } else {
+        // We wait for the channel if the remote side connects to us
+        pc.ondatachannel = (e) => {
+          dc = e.channel;
+          setupDataChannelEvents();
+        };
+      }
+    }
+
+    function setupDataChannelEvents() {
+      dc.onopen = () => {
+        log('System', 'TERMINAL LINK ESTABLISHED');
+        sendBtn.disabled = false;
+        disconnectBtn.disabled = false;
+        connectBtn.disabled = true;
+      };
+      dc.onclose = () => {
+        log('System', 'TERMINAL LINK CLOSED');
+        sendBtn.disabled = true;
+        disconnectBtn.disabled = true;
+        connectBtn.disabled = false;
+      };
+      dc.onmessage = (e) => log('Received', e.data);
+    }
+
+    async function handleOffer(offer) {
+      log('System', 'Incoming connection request...');
+      await setupPeerConnection(false);
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      sendSignal('answer', answer);
+    }
+
+    async function handleAnswer(answer) {
+      if (pc) await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    }
+
+    async function handleRemoteICE(candidate) {
+      if (pc) await pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(e => {});
+    }
+
+    // Logic Helpers
+    function initiateConnection() {
+      if (!selectedPeer) return log('Error', 'No peer selected from list.');
+      targetPeerId = selectedPeer;
+      log('System', `Connecting to ${targetPeerId}...`);
+      setupPeerConnection(true);
+    }
+
+    function sendCommand() {
+      const val = commandInput.value.trim();
+      if (val && dc && dc.readyState === 'open') {
+        dc.send(val);
+        log('Sent', val);
+        commandInput.value = '';
+      }
+    }
+
+    function disconnect() {
+      if (pc) pc.close();
+      updateStatus('rtc', 'offline');
+    }
+
+    function sendSignal(type, data) {
+      if (!targetPeerId) return;
+      client.publish(CONFIG.topic, JSON.stringify({ type, from: peerId, to: targetPeerId, data }));
+    }
+
+    function updatePeerList() {
+      const now = Date.now();
+      const list = document.getElementById('peerList');
+      list.innerHTML = '';
+
+      Object.entries(peerRegistry).forEach(([pid, lastSeen]) => {
+        if (now - lastSeen > 5000) return; // Clean up old peers
+        if (pid === peerId) return; // Don't show myself in the list
+
+        const item = document.createElement('div');
+        item.className = `peer-item ${pid === selectedPeer ? 'selected' : ''}`;
+        item.innerHTML = `<span class="peer-dot"></span><span class="peer-name">${pid}</span>`;
+        item.onclick = () => { selectedPeer = pid; updatePeerList(); };
+        list.appendChild(item);
+      });
+    }
+
+    function log(type, message) {
+      const line = document.createElement('div');
+      line.className = `terminal-line ${type.toLowerCase()}`;
+      line.textContent = `[${new Date().toLocaleTimeString()}] ${type}: ${message}`;
+      terminalOutput.appendChild(line);
+      terminalContainer.scrollTop = terminalContainer.scrollHeight;
+    }
+
+    function updateStatus(type, status) {
+      document.getElementById(type + 'Status').className = 'status-indicator status-' + status;
+      document.getElementById(type + 'Text').textContent = status.charAt(0).toUpperCase() + status.slice(1);
+    }
+
+    function handleInput(e) { if (e.key === 'Enter') sendCommand(); }
+    function clearTerminal() { terminalOutput.innerHTML = ''; log('System', 'Terminal Cleared.'); }
+    function showInfo() {
+      document.getElementById('infoTarget').textContent = targetPeerId || 'None';
+      document.getElementById('infoIce').textContent = pc ? pc.iceConnectionState : 'N/A';
+      document.getElementById('overlay').classList.add('active');
+      document.getElementById('infoPanel').classList.add('active');
+    }
+    function hideInfo() {
+      document.getElementById('overlay').classList.remove('active');
+      document.getElementById('infoPanel').classList.remove('active');
+    }
+  </script>
+</body>
+</html>

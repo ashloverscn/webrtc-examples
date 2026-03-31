@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebRTC Remote Camera Viewer</title>
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <style>
+        /* All original styles preserved exactly as provided */
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); min-height: 100vh; color: white; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        h1 { text-align: center; margin-bottom: 20px; text-shadow: 2px 2px 4px rgba(0,0,0,0.3); }
+        .main-video-container { background: #000; border-radius: 12px; overflow: hidden; box-shadow: 0 10px 40px rgba(0,0,0,0.5); margin-bottom: 20px; position: relative; aspect-ratio: 4/3; max-height: 600px; }
+        #remoteVideo { width: 100%; height: 100%; object-fit: contain; background: #111; }
+        .video-overlay { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.7); padding: 8px 12px; border-radius: 6px; font-size: 12px; }
+        .status-badge { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
+        .status-connected { background: #00ff00; box-shadow: 0 0 8px #00ff00; }
+        .status-connecting { background: #ffaa00; animation: pulse 1s infinite; }
+        .status-disconnected { background: #ff0000; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+        .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+        .panel { background: rgba(255,255,255,0.1); backdrop-filter: blur(10px); border-radius: 12px; padding: 20px; border: 1px solid rgba(255,255,255,0.2); }
+        .panel h3 { margin-bottom: 15px; font-size: 16px; text-transform: uppercase; letter-spacing: 1px; }
+        .camera-list { list-style: none; max-height: 200px; overflow-y: auto; }
+        .camera-item { background: rgba(255,255,255,0.1); padding: 12px; margin-bottom: 8px; border-radius: 8px; cursor: pointer; transition: all 0.3s; display: flex; justify-content: space-between; align-items: center; }
+        .camera-item:hover { background: rgba(255,255,255,0.2); transform: translateX(5px); }
+        .camera-item.active { background: rgba(0,255,0,0.2); border: 1px solid #00ff00; }
+        .camera-status { font-size: 11px; padding: 2px 8px; border-radius: 12px; background: rgba(0,0,0,0.3); }
+        .btn { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border: none; color: white; padding: 12px 24px; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600; transition: all 0.3s; margin-right: 10px; margin-bottom: 10px; }
+        .btn:hover { transform: translateY(-2px); box-shadow: 0 5px 20px rgba(0,0,0,0.3); }
+        .btn:disabled { background: #555; cursor: not-allowed; transform: none; }
+        .btn-danger { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); }
+        .btn-success { background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); }
+        .log-container { background: rgba(0,0,0,0.5); border-radius: 8px; padding: 15px; font-family: 'Courier New', monospace; font-size: 12px; max-height: 150px; overflow-y: auto; margin-top: 10px; }
+        .log-entry { margin-bottom: 5px; padding: 2px 0; border-bottom: 1px solid rgba(255,255,255,0.1); }
+        .log-time { color: #888; margin-right: 10px; }
+        .stats-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 10px; }
+        .stat-box { background: rgba(0,0,0,0.2); padding: 10px; border-radius: 6px; text-align: center; }
+        .stat-value { font-size: 20px; font-weight: bold; color: #4facfe; }
+        .stat-label { font-size: 11px; color: #aaa; text-transform: uppercase; }
+        .empty-state { text-align: center; padding: 40px; color: #888; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📹 WebRTC Remote Camera Viewer</h1>
+        
+        <div class="main-video-container">
+            <video id="remoteVideo" autoplay playsinline></video>
+            <div class="video-overlay">
+                <span id="connectionStatus" class="status-badge status-disconnected"></span>
+                <span id="statusText">Disconnected</span>
+            </div>
+        </div>
+        
+        <div class="controls">
+            <div class="panel">
+                <h3>🔍 Available Cameras</h3>
+                <ul id="cameraList" class="camera-list">
+                    <li class="empty-state">Waiting for cameras...</li>
+                </ul>
+                <button class="btn" onclick="refreshCameras()">🔄 Refresh</button>
+            </div>
+            
+            <div class="panel">
+                <h3>⚙️ Connection Control</h3>
+                <div id="connectionControls">
+                    <p style="margin-bottom: 15px; color: #aaa;">Select a camera from the list to connect</p>
+                    <button class="btn btn-success" id="connectBtn" onclick="connectToCamera()" disabled>🔌 Connect</button>
+                    <button class="btn btn-danger" id="disconnectBtn" onclick="disconnect()" disabled>⏹ Disconnect</button>
+                </div>
+                
+                <div class="stats-grid" id="statsPanel" style="display: none;">
+                    <div class="stat-box"><div class="stat-value" id="statResolution">640x480</div><div class="stat-label">Resolution</div></div>
+                    <div class="stat-box"><div class="stat-value" id="statUptime">-</div><div class="stat-label">Uptime</div></div>
+                    <div class="stat-box"><div class="stat-value" id="statFps">-</div><div class="stat-label">FPS</div></div>
+                    <div class="stat-box"><div class="stat-value" id="statStatus">Live</div><div class="stat-label">Stream</div></div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="panel">
+            <h3>📝 Event Log</h3>
+            <div id="logContainer" class="log-container"></div>
+            <button class="btn" onclick="clearLog()" style="margin-top: 10px;">Clear Log</button>
+        </div>
+    </div>
+
+    <script>
+        const BROKER_URL = 'wss://e5122a5328ea4986a0295fa6e037655a.s2.eu.hivemq.cloud:8884/mqtt';
+        const SIGNALING_TOPIC = 'webrtc/signaling';
+        
+        let mqttClient = null;
+        let pc = null;
+        let selectedCamera = null;
+        let availableCameras = new Map();
+        let connectionStartTime = null;
+        const viewerId = 'viewer_' + Math.random().toString(36).substr(2, 6);
+
+        function log(message, type = 'info') {
+            const container = document.getElementById('logContainer');
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            entry.innerHTML = `<span class="log-time">[${new Date().toLocaleTimeString()}]</span> ${message}`;
+            container.appendChild(entry);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function clearLog() { document.getElementById('logContainer').innerHTML = ''; }
+
+        function updateStatus(status, text) {
+            const badge = document.getElementById('connectionStatus');
+            const statusText = document.getElementById('statusText');
+            badge.className = 'status-badge ' + (status === 'connected' ? 'status-connected' : status === 'connecting' ? 'status-connecting' : 'status-disconnected');
+            statusText.textContent = text;
+        }
+
+        function initMQTT() {
+            log('Connecting to HiveMQ Cloud...');
+            mqttClient = mqtt.connect(BROKER_URL, {
+                clientId: viewerId,
+                username: 'admin',
+                password: 'admin1234S',
+                protocol: 'wss'
+            });
+
+            mqttClient.on('connect', () => {
+                log('✅ Connected to MQTT broker');
+                mqttClient.subscribe(SIGNALING_TOPIC);
+            });
+
+            mqttClient.on('message', (topic, payload) => {
+                const msg = JSON.parse(payload.toString());
+                
+                // DISCOVERY: Handle Presence messages from Pi
+                if (msg.type === 'presence') {
+                    handlePresence(msg.from);
+                }
+
+                // SIGNALING: Handle messages addressed to this viewer
+                if (msg.to !== viewerId) return;
+
+                if (msg.type === 'answer') {
+                    log('📥 Received ANSWER');
+                    pc.setRemoteDescription(new RTCSessionDescription(msg.data));
+                } else if (msg.type === 'ice') {
+                    pc.addIceCandidate(new RTCIceCandidate(msg.data));
+                }
+            });
+        }
+
+        function handlePresence(cameraId) {
+            if (!availableCameras.has(cameraId)) {
+                availableCameras.set(cameraId, { lastSeen: Date.now() });
+                log(`📹 Camera detected: ${cameraId}`);
+                updateCameraList();
+            } else {
+                availableCameras.get(cameraId).lastSeen = Date.now();
+            }
+        }
+
+        function updateCameraList() {
+            const list = document.getElementById('cameraList');
+            if (availableCameras.size === 0) return;
+            list.innerHTML = '';
+            availableCameras.forEach((cam, id) => {
+                const li = document.createElement('li');
+                li.className = 'camera-item' + (selectedCamera === id ? ' active' : '');
+                li.innerHTML = `<span>${id}</span><span class="camera-status">🟢 Online</span>`;
+                li.onclick = () => {
+                    selectedCamera = id;
+                    document.getElementById('connectBtn').disabled = false;
+                    updateCameraList();
+                };
+                list.appendChild(li);
+            });
+        }
+
+        async function connectToCamera() {
+            log(`🔌 Initiating WebRTC to ${selectedCamera}...`);
+            updateStatus('connecting', 'Negotiating...');
+            
+            pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+
+            pc.onicecandidate = (event) => {
+                if (event.candidate) {
+                    mqttClient.publish(SIGNALING_TOPIC, JSON.stringify({
+                        type: 'ice', from: viewerId, to: selectedCamera, data: event.candidate
+                    }));
+                }
+            };
+
+            pc.ontrack = (event) => {
+                log('📹 Stream Received!');
+                document.getElementById('remoteVideo').srcObject = event.streams[0];
+                updateStatus('connected', 'Live');
+                connectionStartTime = Date.now();
+                document.getElementById('statsPanel').style.display = 'grid';
+                document.getElementById('disconnectBtn').disabled = false;
+                document.getElementById('connectBtn').disabled = true;
+                startStats();
+            };
+
+            // Requirement for receiving-only clients
+            pc.addTransceiver('video', { direction: 'recvonly' });
+
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+
+            mqttClient.publish(SIGNALING_TOPIC, JSON.stringify({
+                type: 'offer', from: viewerId, to: selectedCamera, data: { sdp: offer.sdp, type: offer.type }
+            }));
+        }
+
+        function disconnect() {
+            if (pc) pc.close();
+            document.getElementById('remoteVideo').srcObject = null;
+            updateStatus('disconnected', 'Disconnected');
+            document.getElementById('disconnectBtn').disabled = true;
+            document.getElementById('connectBtn').disabled = false;
+            document.getElementById('statsPanel').style.display = 'none';
+            log('⏹ Connection closed');
+        }
+
+        function startStats() {
+            setInterval(() => {
+                if (!connectionStartTime) return;
+                const uptime = Math.floor((Date.now() - connectionStartTime) / 1000);
+                document.getElementById('statUptime').textContent = uptime + 's';
+                
+                if (pc) {
+                    pc.getStats().then(stats => {
+                        stats.forEach(report => {
+                            if (report.type === 'inbound-rtp' && report.kind === 'video') {
+                                document.getElementById('statFps').textContent = Math.round(report.framesPerSecond || 0) + ' fps';
+                            }
+                        });
+                    });
+                }
+            }, 1000);
+        }
+
+        function refreshCameras() {
+            const now = Date.now();
+            availableCameras.forEach((cam, id) => {
+                if (now - cam.lastSeen > 10000) availableCameras.delete(id);
+            });
+            updateCameraList();
+        }
+
+        window.onload = initMQTT;
+    </script>
+</body>
+</html>
