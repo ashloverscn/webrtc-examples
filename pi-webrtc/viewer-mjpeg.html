@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebRTC Native MJPEG Viewer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.1.0/paho-mqtt.min.js" type="text/javascript"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #121214;
+            color: #e2e8f0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+        }
+        .container {
+            text-align: center;
+            max-width: 700px;
+            width: 100%;
+            padding: 20px;
+        }
+        .monitor-frame {
+            background: #000;
+            border: 2px solid #2d3748;
+            border-radius: 8px;
+            overflow: hidden;
+            width: 640px;
+            height: 480px;
+            margin: 20px auto;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+        }
+        #mjpeg-view {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            display: none;
+        }
+        .status-dot {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            background-color: #ef4444;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        .status-container {
+            font-size: 0.95rem;
+            color: #a0aec0;
+            margin-bottom: 10px;
+        }
+        select, button {
+            background: #1a202c;
+            color: white;
+            border: 1px solid #4a5568;
+            padding: 10px 16px;
+            font-size: 1rem;
+            border-radius: 6px;
+            outline: none;
+        }
+        select { width: 220px; text-align: center; cursor: pointer; }
+        button {
+            background: #3182ce;
+            border: none;
+            cursor: pointer;
+            font-weight: 600;
+            margin-left: 8px;
+        }
+        button:hover { background: #2b6cb0; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Raspberry Pi WebRTC MJPEG Monitor</h2>
+    
+    <div class="status-container">
+        <span id="dot" class="status-dot"></span>
+        <span id="status-text">Disconnected from System</span>
+    </div>
+
+    <div>
+        <select id="camera-select">
+            <option value="">Scanning for cameras...</option>
+        </select>
+        <button id="connect-btn" onclick="initiateWebRTCHandshake()">Connect Stream</button>
+    </div>
+
+    <div class="monitor-frame">
+        <div id="placeholder-text" style="color: #4a5568;">No Active Feed Active</div>
+        <img id="mjpeg-view" alt="Live Stream Pipe Output">
+    </div>
+</div>
+
+<script>
+    const SIGNALING_TOPIC = "webrtc/signaling";
+    const VIEWER_ID = "viewer_" + Math.random().toString(36).substring(2, 8);
+    
+    let mqttClient;
+    let peerConnection;
+    let targetCameraId = "";
+    
+    // Tracks active devices: { "camera_id": lastSeenTimestamp }
+    let discoveredCameras = {}; 
+
+    // Elements
+    const statusText = document.getElementById("status-text");
+    const statusDot = document.getElementById("dot");
+    const imgView = document.getElementById("mjpeg-view");
+    const placeholder = document.getElementById("placeholder-text");
+    const cameraSelect = document.getElementById("camera-select");
+
+    function updateStatus(message, color = "#ef4444") {
+        statusText.innerText = message;
+        statusDot.style.backgroundColor = color;
+    }
+
+    // --- 1. MQTT Setup ---
+    function setupMQTT() {
+        updateStatus("Connecting to HiveMQ Signaling Cloud...", "#ecc94b");
+        
+        mqttClient = new Paho.MQTT.Client(
+            "wss://e5122a5328ea4986a0295fa6e037655a.s2.eu.hivemq.cloud:8884/mqtt", 
+            "client_" + VIEWER_ID
+        );
+
+        mqttClient.onConnectionLost = (response) => {
+            updateStatus("MQTT Link Dropped: " + response.errorMessage, "#ef4444");
+        };
+
+        mqttClient.onMessageArrived = handleSignalingMessage;
+
+        const connectOptions = {
+            useSSL: true,
+            userName: "admin",
+            password: "admin1234S",
+            onSuccess: () => {
+                updateStatus("Signaling Online. Ready to Link.", "#3182ce");
+                mqttClient.subscribe(SIGNALING_TOPIC);
+                
+                // Start house-keeping loop to prune dead cameras every 3 seconds
+                setInterval(pruneStaleCameras, 3000);
+            },
+            onFailure: (err) => {
+                updateStatus("MQTT Connection Failed: " + err.errorMessage, "#ef4444");
+            }
+        };
+
+        mqttClient.connect(connectOptions);
+    }
+
+    // --- 2. Signaling Handling & Auto Discovery ---
+    function handleSignalingMessage(message) {
+        try {
+            const payload = JSON.parse(message.payloadString);
+            
+            // Capture camera presence heartbeats broadcasted to everyone
+            if (payload.type === "presence" && payload.from) {
+                const cameraId = payload.from;
+                const isNew = !discoveredCameras[cameraId];
+                
+                discoveredCameras[cameraId] = Date.now(); // Record/refresh timestamp
+                
+                if (isNew) {
+                    rebuildCameraDropdown();
+                }
+                return;
+            }
+
+            // Only process handshake messages targeted straight to us
+            if (payload.to !== VIEWER_ID) return;
+
+            if (payload.type === "answer") {
+                console.log("📥 Received Answer from camera backend.");
+                peerConnection.setRemoteDescription(new RTCSessionDescription(payload.data));
+            } else if (payload.type === "ice") {
+                console.log("📥 Received Remote ICE candidate.");
+                if (payload.data && peerConnection) {
+                    peerConnection.addIceCandidate(new RTCIceCandidate(payload.data));
+                }
+            }
+        } catch (e) {
+            console.error("Signaling parser error:", e);
+        }
+    }
+
+    // Dynamic UI Updates
+    function rebuildCameraDropdown() {
+        const currentSelection = cameraSelect.value;
+        cameraSelect.innerHTML = "";
+        
+        const cameraIds = Object.keys(discoveredCameras);
+        
+        if (cameraIds.length === 0) {
+            const opt = document.createElement("option");
+            opt.value = "";
+            opt.innerText = "Scanning for cameras...";
+            cameraSelect.appendChild(opt);
+            return;
+        }
+
+        cameraIds.forEach(id => {
+            const opt = document.createElement("option");
+            opt.value = id;
+            opt.innerText = id;
+            if (id === currentSelection) opt.selected = true;
+            cameraSelect.appendChild(opt);
+        });
+    }
+
+    function pruneStaleCameras() {
+        const now = Date.now();
+        let changed = false;
+
+        for (const [id, lastSeen] of Object.entries(discoveredCameras)) {
+            // If camera hasn't reported back in 5 seconds, drop it
+            if (now - lastSeen > 5000) {
+                delete discoveredCameras[id];
+                changed = true;
+                console.log(`⚠️ Camera ${id} timed out. Removing.`);
+            }
+        }
+
+        if (changed) {
+            rebuildCameraDropdown();
+        }
+    }
+
+    function sendSignal(type, data) {
+        const payload = {
+            type: type,
+            from: VIEWER_ID,
+            to: targetCameraId,
+            data: data
+        };
+        const message = new Paho.MQTT.Message(JSON.stringify(payload));
+        message.destinationName = SIGNALING_TOPIC;
+        mqttClient.send(message);
+    }
+
+    // --- 3. WebRTC Construction ---
+    async function initiateWebRTCHandshake() {
+        targetCameraId = cameraSelect.value;
+        if (!targetCameraId) {
+            alert("Please select a discovered camera from the list first!");
+            return;
+        }
+
+        if (peerConnection) {
+            peerConnection.close();
+        }
+
+        updateStatus(`Connecting to ${targetCameraId}...`, "#ecc94b");
+        
+        peerConnection = new RTCPeerConnection({
+            iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+        });
+
+        peerConnection.onicecandidate = (event) => {
+            if (event.candidate) {
+                sendSignal("ice", event.candidate);
+            }
+        };
+
+        peerConnection.onconnectionstatechange = () => {
+            console.log("Connection State Changed:", peerConnection.connectionState);
+            if (peerConnection.connectionState === "connected") {
+                updateStatus("WebRTC Link Active!", "#48bb78");
+            } else if (peerConnection.connectionState === "failed" || peerConnection.connectionState === "closed") {
+                updateStatus("Connection Lost.", "#ef4444");
+                imgView.style.display = "none";
+                placeholder.style.display = "block";
+            }
+        };
+
+        peerConnection.ondatachannel = (event) => {
+            if (event.channel.label === "mjpeg-stream") {
+                console.log("🔥 MJPEG Data Channel connected to pipeline.");
+                const channel = event.channel;
+                
+                channel.onmessage = (msgEvent) => {
+                    const blob = new Blob([msgEvent.data], { type: 'image/jpeg' });
+                    const oldUrl = imgView.src;
+                    
+                    imgView.src = URL.createObjectURL(blob);
+                    
+                    if (imgView.style.display !== "block") {
+                        placeholder.style.display = "none";
+                        imgView.style.display = "block";
+                    }
+
+                    if (oldUrl.startsWith('blob:')) {
+                        URL.revokeObjectURL(oldUrl);
+                    }
+                };
+            }
+        };
+
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+        
+        console.log("📤 Distributing Local Offer profile via MQTT loop...");
+        sendSignal("offer", {
+            sdp: peerConnection.localDescription.sdp,
+            type: peerConnection.localDescription.type
+        });
+    }
+
+    window.onload = setupMQTT;
+</script>
+
+</body>
+</html>
