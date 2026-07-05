@@ -226,7 +226,7 @@ async def main():
     
     # Pre-initialize OpenCV Video capture here
     logger.info("[*] Pre-initializing /dev/video0 capture subsystems...")
-    video_capture = cv2.VideoCapture(17)
+    video_capture = cv2.VideoCapture(0)
     
     # Set requested frame sizing on the hardware layer
     video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, WIDTH)
