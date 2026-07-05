@@ -16,9 +16,10 @@ logger = logging.getLogger("WebRTC-PiCam")
 
 WIDTH, HEIGHT = 640, 480
 
-# --- Global Frame Sync State ---
+# --- Global Frame Sync & Stream Controls ---
 latest_frame_bytes = None
 frame_ready_event = asyncio.Event()
+streaming_allowed = asyncio.Event()  # Gating flag: blocks pipeline until WebRTC is connected
 loop_ref = None
 picam = None
 
@@ -46,9 +47,14 @@ class CameraVideoTrack(MediaStreamTrack):
 
     async def recv(self):
         """Asynchronously requests and processes raw YUV420 planar frames."""
-        global latest_frame_bytes, frame_ready_event
+        global latest_frame_bytes, frame_ready_event, streaming_allowed
         
-        # Block layout execution efficiently until a frame passes the callback thread
+        # 1. Gate frames until ICE negotiation succeeds and state transitions to connected
+        if not streaming_allowed.is_set():
+            logger.debug("WebRTC not fully connected. Holding frame transmission...")
+            await streaming_allowed.wait()
+        
+        # 2. Block until a fresh frame passes the background callback thread
         await frame_ready_event.wait()
         frame_ready_event.clear()
         
@@ -138,8 +144,10 @@ class RemoteCameraSource:
             logger.error(f"Signaling Error: {e}")
 
     async def handle_offer(self, data):
+        global streaming_allowed
         if self.pc: 
             await self.pc.close()
+            streaming_allowed.clear()
 
         self.pc = RTCPeerConnection()
         self.current_track = CameraVideoTrack()
@@ -157,13 +165,16 @@ class RemoteCameraSource:
         @self.pc.on("connectionstatechange")
         async def on_state_change():
             logger.info(f"WebRTC Connection State: {self.pc.connectionState}")
-            if self.pc.connectionState in ["failed", "closed"]:
+            if self.pc.connectionState == "connected":
+                logger.info("🔥 ICE Negotiation succeeded. Starting video frame transmission!")
+                streaming_allowed.set()
+            elif self.pc.connectionState in ["failed", "closed"]:
+                streaming_allowed.clear()
                 if self.current_track: 
                     self.current_track.stop()
 
         await self.pc.setRemoteDescription(RTCSessionDescription(sdp=data["sdp"], type=data["type"]))
         
-        # FIX: Explicitly scoped to class instantiation boundary (self.pc instead of pc)
         answer = await self.pc.createAnswer()
         await self.pc.setLocalDescription(answer)
         
@@ -195,20 +206,21 @@ async def main():
     global loop_ref, picam
     loop_ref = asyncio.get_running_loop()
     
-    # Mount Picamera Subsystems within the loop thread boundary cleanly
-    logger.info("[*] Booting Picamera2 hardware subsystems...")
+    # Pre-initialize camera here so hardware is active and ready before any viewer connects
+    logger.info("[*] Pre-initializing Picamera2 hardware subsystems...")
     picam = Picamera2()
     config = picam.create_video_configuration(main={"format": "YUV420", "size": (WIDTH, HEIGHT)})
     picam.configure(config)
     picam.post_callback = native_frame_callback
     picam.start()
+    logger.info("🚀 Camera processing pipeline is running and buffered.")
 
     source = RemoteCameraSource()
     source._loop = loop_ref
     source.connect()
     
     print("-" * 40)
-    print(f"🚀 LIVE PICAMERA2 WEBRTC SOURCE ONLINE")
+    print(f"🚀 READY-GATED PICAMERA2 WEBRTC ONLINE")
     print(f"DEVICE ID: {source.peer_id}")
     print("-" * 40)
     
