@@ -227,7 +227,6 @@ class WebRTCFileTransfer:
 
         @self.channel.on("message")
         def on_message(msg):
-            # Parse the structured incoming control payloads
             if isinstance(msg, str):
                 try:
                     meta = json.loads(msg)
@@ -241,14 +240,18 @@ class WebRTCFileTransfer:
                 except Exception as e:
                     self.console_log(f"Frame validation drop: {e}")
             else:
-                # Append raw incoming file binary bytes straight to memory array
                 self.received_chunks.append(msg)
                 current_bytes = sum(len(c) for c in self.received_chunks)
                 total = self.incoming_file_metadata.get("size", 1)
-                self.set_progress((current_bytes / total) * 100)
+                
+                # Receiver-side Throttling to prevent receiver flicker
+                progress = int((current_bytes / total) * 100)
+                if progress % 2 == 0 or progress == 100:
+                    self.set_progress(progress)
 
     async def stream_file_payload(self, file_path):
         if not self.channel or self.channel.readyState != "open":
+            self.console_log("Cannot send: Data channel is not open yet.")
             return
             
         file_name = os.path.basename(file_path)
@@ -257,34 +260,47 @@ class WebRTCFileTransfer:
         self.console_log(f"Starting stream for {file_name}...")
         self.set_status(f"Uploading: {file_name}")
 
-        # Send File Header Meta payload
         meta_header = {"type": "file_start", "name": file_name, "size": file_size}
         self.channel.send(json.dumps(meta_header))
         await asyncio.sleep(0.2)
 
         bytes_sent = 0
+        max_buffer_size = 1024 * 1024  # 1 MB Backpressure Limit
+        last_reported_progress = -1
+
         with open(file_path, "rb") as f:
             while bytes_sent < file_size:
+                # Flow Control: Halt loop if WebRTC buffer is currently backed up
+                while self.channel.bufferedAmount > max_buffer_size:
+                    await asyncio.sleep(0.01)
+
                 chunk = f.read(CHUNK_SIZE)
                 if not chunk:
                     break
+                
                 self.channel.send(chunk)
                 bytes_sent += len(chunk)
-                self.set_progress((bytes_sent / file_size) * 100)
                 
-                # Dynamic yield loop step to keep the local GUI completely clear and smooth
-                if bytes_sent % (CHUNK_SIZE * 4) == 0:
-                    await asyncio.sleep(0.001)
+                # THROTTLING FIX: Only trigger Tkinter layout updates when integer percentage changes
+                current_progress = int((bytes_sent / file_size) * 100)
+                if current_progress != last_reported_progress:
+                    self.set_progress(current_progress)
+                    last_reported_progress = current_progress
+                
+                # Tiny tick sleep to allow background execution frames to clear cleanly
+                await asyncio.sleep(0.001)
 
-        await asyncio.sleep(0.2)
-        # Send File Footer/EOF boundary packet
+        # Confirm buffer is completely flushed before dispatching the final flag
+        while self.channel.bufferedAmount > 0:
+            await asyncio.sleep(0.05)
+
         self.channel.send(json.dumps({"type": "file_end"}))
         self.console_log("Streaming transaction successfully uploaded!")
         self.set_status("Upload complete")
+        self.set_progress(0)
 
     def save_received_file(self):
         file_name = self.incoming_file_metadata.get("name", "synced_payload.bin")
-        # Direct write to the user downloads/home path cleanly
         output_path = os.path.expanduser(f"~/Downloads/{file_name}")
         
         try:
@@ -294,6 +310,7 @@ class WebRTCFileTransfer:
                     f.write(chunk)
             self.console_log(f"Success! File saved cleanly to: {output_path}")
             self.set_status("Download Complete!")
+            self.set_progress(0)
             messagebox.showinfo("Stream complete", f"File saved directly to:\n{output_path}")
         except Exception as e:
             self.console_log(f"Disk IO error compiling incoming chunks: {e}")
@@ -319,6 +336,10 @@ class WebRTCFileTransfer:
         def on_datachannel(channel):
             self.channel = channel
             self.attach_datachannel_listeners()
+            if self.channel.readyState == "open":
+                self.console_log("Remote pipeline detected open instantly.")
+                self.set_status("Connected and Ready to Sync")
+                self.loop.call_soon_threadsafe(lambda: self.btn_select_file.config(state="normal"))
 
         offer_sdp = self.incoming_offers[target_id]
         await self.pc.setRemoteDescription(RTCSessionDescription(sdp=offer_sdp["sdp"], type=offer_sdp["type"]))
