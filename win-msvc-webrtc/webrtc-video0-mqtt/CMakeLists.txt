@@ -13,11 +13,11 @@ find_package(nlohmann_json REQUIRED)
 find_package(PahoMqttCpp REQUIRED)
 find_package(LibDataChannel CONFIG REQUIRED)
 
-add_executable(webrtc-video-mqtt main.cpp)
+add_executable(webrtc-video0-mqtt main.cpp)
 
-target_compile_definitions(webrtc-video-mqtt PRIVATE PAHO_MQTTPP_IMPORTS)
+target_compile_definitions(webrtc-video0-mqtt PRIVATE PAHO_MQTTPP_IMPORTS)
 
-target_link_libraries(webrtc-video-mqtt PRIVATE 
+target_link_libraries(webrtc-video0-mqtt PRIVATE 
     opencv_core 
     opencv_videoio 
     opencv_imgproc
