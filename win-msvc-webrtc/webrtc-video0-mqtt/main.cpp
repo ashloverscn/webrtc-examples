@@ -22,9 +22,8 @@ const int WIDTH = 640;
 const int HEIGHT = 480;
 const std::string MQTT_SERVER = "ssl://e5122a5328ea4986a0295fa6e037655a.s2.eu.hivemq.cloud:8883";
 const std::string TOPIC = "webrtc/signaling";
-const int CAMERA_INDEX = 0; 
+const std::string VIDEO_FILE = "test.mp4"; 
 
-// Mutexes for state protection
 std::mutex frame_mutex;
 std::condition_variable frame_cv;
 std::vector<uint8_t> latest_frame_bytes;
@@ -42,7 +41,7 @@ std::string generate_peer_id() {
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_int_distribution<> distr(1000, 9999);
-    return "webcam_cpp_" + std::to_string(distr(gen));
+    return "video0_cpp_" + std::to_string(distr(gen));
 }
 
 std::string peer_id = generate_peer_id();
@@ -66,28 +65,47 @@ void reset_webrtc_connection() {
     std::cout << "✅ Resources cleared. Ready for new connections." << std::endl;
 }
 
-// --- OpenCV Web Camera Loop (Threaded) ---
+// --- OpenCV Video File Loop (Threaded with Robust Hard-Reset Looping) ---
 void opencv_video_loop() {
-    cv::VideoCapture video_capture(CAMERA_INDEX);
+    cv::VideoCapture video_capture(VIDEO_FILE);
     if (!video_capture.isOpened()) {
-        std::cerr << "❌ Could not open web camera at index: " << CAMERA_INDEX << std::endl;
+        std::cerr << "❌ Could not open video file: " << VIDEO_FILE << std::endl;
         running_capture = false;
         return;
     }
 
-    video_capture.set(cv::CAP_PROP_FRAME_WIDTH, WIDTH);
-    video_capture.set(cv::CAP_PROP_FRAME_HEIGHT, HEIGHT);
+    double fps = video_capture.get(cv::CAP_PROP_FPS);
+    if (fps <= 0.0) fps = 30.0;
+    
+    auto frame_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::duration<double, std::ratio<1>>(1.0 / fps)
+    );
 
     cv::Mat frame;
     std::vector<uint8_t> jpeg_buffer;
     std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, 75};
 
     while (running_capture) {
+        auto start_time = std::chrono::steady_clock::now();
+
         video_capture >> frame;
         
+        // 🔄 HARD RESET: If frame is empty, explicitly re-initialize the container file descriptor
         if (frame.empty()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            continue;
+            video_capture.release(); 
+            std::this_thread::sleep_for(std::chrono::milliseconds(10)); // brief cool-down
+            
+            if (!video_capture.open(VIDEO_FILE)) {
+                std::cerr << "⚠️ Loop Error: Failed to reopen " << VIDEO_FILE << std::endl;
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+                continue;
+            }
+            
+            video_capture >> frame;
+            if (frame.empty()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                continue;
+            }
         }
 
         if (frame.cols != WIDTH || frame.rows != HEIGHT) {
@@ -103,7 +121,10 @@ void opencv_video_loop() {
         }
         frame_cv.notify_one();
         
-        std::this_thread::sleep_for(std::chrono::milliseconds(33));
+        auto processing_time = std::chrono::steady_clock::now() - start_time;
+        if (processing_time < frame_duration) {
+            std::this_thread::sleep_for(frame_duration - processing_time);
+        }
     }
     video_capture.release();
 }
@@ -133,17 +154,16 @@ int main() {
             std::string type = payload.value("type", "");
 
             if (type == "offer") {
-                // 1. Terminate any stale peer connections gracefully before allocating fresh ones
                 reset_webrtc_connection();
 
                 std::shared_ptr<rtc::PeerConnection> local_pc;
                 {
                     std::lock_guard<std::mutex> lock(connection_mutex);
                     viewer_id = payload.value("from", "");
-                    std::cout << "📥 Received fresh Offer from " << viewer_id << ". Spawning PeerConnection..." << std::endl;
+                    std::cout << "📥 Received Offer from " << viewer_id << " (MP4 Stream Core)" << std::endl;
 
                     pc = std::make_shared<rtc::PeerConnection>(config);
-                    local_pc = pc; // Keep a local reference to avoid mid-flight reset races
+                    local_pc = pc; 
                 }
 
                 local_pc->onLocalDescription([&, client_ptr = &mqtt_client](rtc::Description description) {
@@ -170,7 +190,7 @@ int main() {
                         video_channel = dc;
                         
                         video_channel->onOpen([&]() {
-                            std::cout << "🚀 Video Data Channel Opened. Activating Stream." << std::endl;
+                            std::cout << "🚀 Video Data Channel Connected. Streaming MP4." << std::endl;
                             std::lock_guard<std::mutex> stream_lock(connection_mutex);
                             streaming_allowed = true;
                         });
@@ -184,19 +204,14 @@ int main() {
                 });
 
                 local_pc->onStateChange([&](rtc::PeerConnection::State state) {
-                    std::cout << "[*] WebRTC State Changed: " << state << std::endl;
-                    
-                    // Removed State::Disconnected from this condition to prevent killing connections 
-                    // that are temporarily transitioning states mid-handshake.
+                    std::cout << "[*] WebRTC State: " << state << std::endl;
                     if (state == rtc::PeerConnection::State::Failed || 
                         state == rtc::PeerConnection::State::Closed) {
-                        
-                        std::cout << "⚠️ Connection failed or closed. Triggering async connection reset..." << std::endl;
+                        std::cout << "⚠️ Connection degraded or closed. Triggering async reset..." << std::endl;
                         std::thread([]() { reset_webrtc_connection(); }).detach();
                     }
                 });
 
-                // 2. Set the remote description ONLY after all events/listeners are safely bound
                 try {
                     std::string sdp = payload["data"]["sdp"];
                     local_pc->setRemoteDescription(rtc::Description(sdp, "offer"));
@@ -207,11 +222,19 @@ int main() {
 
             } else if (type == "ice") {
                 std::lock_guard<std::mutex> lock(connection_mutex);
-                if (pc && payload.value("from", "") == viewer_id) {
+                if (!pc) return;
+                if (payload.value("from", "") != viewer_id) return;
+                
+                try {
                     std::string candidate_str = payload["data"]["candidate"];
                     std::string mid = payload["data"]["sdpMid"];
-                    pc->addRemoteCandidate(rtc::Candidate(candidate_str, mid));
+                    if (!candidate_str.empty()) {
+                        pc->addRemoteCandidate(rtc::Candidate(candidate_str, mid));
+                    }
+                } catch (const std::exception& e) {
+                    std::cerr << "⚠️ Dropped incompatible or out-of-order ICE candidate: " << e.what() << std::endl;
                 }
+                
             } else if (type == "disconnect") {
                 std::cout << "📥 Explicit disconnect payload received from viewer." << std::endl;
                 std::thread([]() { reset_webrtc_connection(); }).detach();
@@ -242,7 +265,7 @@ int main() {
     });
 
     std::cout << "============================================" << std::endl;
-    std::cout << "📷 WEBCAM LIVE STREAM TRANSCEIVER ONLINE" << std::endl;
+    std::cout << "🎞️ MP4 FILE STREAM TRANSCEIVER ONLINE" << std::endl;
     std::cout << "DEVICE ID: " << peer_id << std::endl;
     std::cout << "============================================" << std::endl;
 
@@ -256,10 +279,14 @@ int main() {
             frame_ready = false;
         }
 
-        // Synchronize channel usage safely across threads
         std::lock_guard<std::mutex> lock(connection_mutex);
         if (streaming_allowed && video_channel && video_channel->isOpen() && !frame_buffer.empty()) {
             try {
+                // 🛑 Backpressure check: Drop frame if outgoing network socket is saturated
+                if (video_channel->bufferedAmount() > 2 * 1024 * 1024) { 
+                    continue; 
+                }
+
                 video_channel->send(reinterpret_cast<const std::byte*>(frame_buffer.data()), frame_buffer.size());
             } catch (const std::exception& e) {
                 std::cerr << "⚠️ Failed to send via DataChannel: " << e.what() << std::endl;
