@@ -62,20 +62,16 @@ void clear_active_session_pointers() {
     }
 }
 
-// --- OpenCV Webcam Loop (Threaded for Windows DirectShow Device 0) ---
+// --- OpenCV File Loop (Streams test.mp4 continuously) ---
 void opencv_video_loop() {
-    cv::VideoCapture video_capture(0, cv::CAP_DSHOW);
+    cv::VideoCapture video_capture("test.mp4");
     if (!video_capture.isOpened()) {
-        std::cerr << "❌ Windows Error: Could not open webcam at index 0 using DirectShow!" << std::endl;
+        std::cerr << "❌ Error: Could not open video file test.mp4!" << std::endl;
         running_capture = false;
         return;
     }
 
-    video_capture.set(cv::CAP_PROP_FRAME_WIDTH, WIDTH);
-    video_capture.set(cv::CAP_PROP_FRAME_HEIGHT, HEIGHT);
-    
-    auto frame_duration = std::chrono::milliseconds(33);
-
+    auto frame_duration = std::chrono::milliseconds(33); // targeting ~30fps
     cv::Mat frame;
     std::vector<uint8_t> jpeg_buffer;
     std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, 75};
@@ -86,7 +82,8 @@ void opencv_video_loop() {
         video_capture >> frame;
         
         if (frame.empty()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            // Loop the video back to start if it ends
+            video_capture.set(cv::CAP_PROP_POS_FRAMES, 0);
             continue;
         }
 
@@ -203,7 +200,7 @@ int main() {
                         video_channel->onOpen([&, this_session]() {
                             std::lock_guard<std::mutex> stream_lock(connection_mutex);
                             if (this_session != current_session_id) return;
-                            std::cout << "🚀 Video Data Channel Connected. Streaming Webcam [Session #" << this_session << "]." << std::endl;
+                            std::cout << "🚀 Video Data Channel Connected. Streaming test.mp4 [Session #" << this_session << "]." << std::endl;
                             streaming_allowed = true;
                         });
                         
@@ -299,7 +296,7 @@ int main() {
     });
 
     std::cout << "============================================" << std::endl;
-    std::cout << "🎥 WINDOWS WEBCAM 0 TRANSCEIVER ONLINE" << std::endl;
+    std::cout << "🎬 TRANSCEIVER ONLINE (SOURCE: test.mp4)" << std::endl;
     std::cout << "DEVICE ID: " << peer_id << std::endl;
     std::cout << "============================================" << std::endl;
 
