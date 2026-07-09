@@ -9,6 +9,7 @@
 #include <chrono>
 #include <memory>
 #include <random>
+#include <atomic>
 
 #include <opencv2/opencv.hpp>
 #include <opencv2/core/utils/logger.hpp>
@@ -36,6 +37,9 @@ std::shared_ptr<rtc::PeerConnection> pc;
 std::shared_ptr<rtc::DataChannel> video_channel;
 std::string viewer_id = "";
 
+// Monotonic session generator to protect callbacks from stale actions
+uint64_t current_session_id = 0;
+
 std::string generate_peer_id() {
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -45,24 +49,17 @@ std::string generate_peer_id() {
 
 std::string peer_id = generate_peer_id();
 
-// Helper to tear down current connection cleanly to allow reconnects
-void reset_webrtc_connection() {
-    std::lock_guard<std::mutex> lock(connection_mutex);
-    if (!pc && !video_channel && !streaming_allowed) return; // Already reset
-
-    std::cout << "🔄 Resetting WebRTC resources & clearing old session contexts..." << std::endl;
+// Clean up current active pointers (Expects connection_mutex to be held externally)
+void clear_active_session_pointers() {
     streaming_allowed = false;
     viewer_id = "";
-
     if (video_channel) {
         try { video_channel->close(); } catch (...) {}
         video_channel.reset();
     }
     if (pc) {
-        try { pc->close(); } catch (...) {}
         pc.reset();
     }
-    std::cout << "✅ Resources cleared. Instantly ready for new connection offers." << std::endl;
 }
 
 // --- OpenCV Webcam Loop (Threaded for Windows DirectShow Device 0) ---
@@ -139,20 +136,42 @@ int main() {
             std::string type = payload.value("type", "");
 
             if (type == "offer") {
-                // Instantly wipe previous session contexts on new inbound offer
-                reset_webrtc_connection();
+                std::shared_ptr<rtc::PeerConnection> old_pc_to_destroy = nullptr;
+                uint64_t this_session = 0;
 
-                std::shared_ptr<rtc::PeerConnection> local_pc;
                 {
                     std::lock_guard<std::mutex> lock(connection_mutex);
+                    
+                    current_session_id++;
+                    this_session = current_session_id;
+
                     viewer_id = payload.value("from", "");
-                    std::cout << "📥 Received Offer from " << viewer_id << " (Live Webcam Core)" << std::endl;
+                    std::cout << "📥 Received Offer from " << viewer_id << " | Staging Session #" << this_session << "..." << std::endl;
+                    
+                    // Isolate raw pointer away from the shared global space before configuring a new one
+                    if (pc) {
+                        old_pc_to_destroy = pc;
+                    }
+                    clear_active_session_pointers();
 
                     pc = std::make_shared<rtc::PeerConnection>(config);
-                    local_pc = pc; 
                 }
 
-                local_pc->onLocalDescription([&, client_ptr = &mqtt_client](rtc::Description description) {
+                // Destroy the background WebRTC thread handle safely out-of-lock
+                if (old_pc_to_destroy) {
+                    std::cout << "🔄 Purging context allocations from prior generation..." << std::endl;
+                    try { old_pc_to_destroy->close(); } catch(...) {}
+                    old_pc_to_destroy.reset();
+                }
+
+                // Keep local shared pointer reference bound inside closures
+                std::shared_ptr<rtc::PeerConnection> local_pc = pc;
+
+                local_pc->onLocalDescription([&, client_ptr = &mqtt_client, this_session](rtc::Description description) {
+                    {
+                        std::lock_guard<std::mutex> lock(connection_mutex);
+                        if (this_session != current_session_id) return;
+                    }
                     json answer = {
                         {"type", description.typeString()},
                         {"from", peer_id},
@@ -162,7 +181,11 @@ int main() {
                     try { client_ptr->publish(TOPIC, answer.dump()); } catch (...) {}
                 });
 
-                local_pc->onLocalCandidate([&, client_ptr = &mqtt_client](rtc::Candidate candidate) {
+                local_pc->onLocalCandidate([&, client_ptr = &mqtt_client, this_session](rtc::Candidate candidate) {
+                    {
+                        std::lock_guard<std::mutex> lock(connection_mutex);
+                        if (this_session != current_session_id) return;
+                    }
                     json ice = {
                         {"type", "ice"}, {"from", peer_id}, {"to", viewer_id},
                         {"data", {{"candidate", std::string(candidate)}, {"sdpMid", candidate.mid()}, {"sdpMLineIndex", 0}}}
@@ -170,33 +193,48 @@ int main() {
                     try { client_ptr->publish(TOPIC, ice.dump()); } catch (...) {}
                 });
 
-                local_pc->onDataChannel([&](std::shared_ptr<rtc::DataChannel> dc) {
+                local_pc->onDataChannel([&, this_session](std::shared_ptr<rtc::DataChannel> dc) {
                     if (dc->label() == "video-stream") {
                         std::lock_guard<std::mutex> dc_lock(connection_mutex);
+                        if (this_session != current_session_id) return;
+                        
                         video_channel = dc;
                         
-                        video_channel->onOpen([&]() {
-                            std::cout << "🚀 Video Data Channel Connected. Streaming Webcam." << std::endl;
+                        video_channel->onOpen([&, this_session]() {
                             std::lock_guard<std::mutex> stream_lock(connection_mutex);
+                            if (this_session != current_session_id) return;
+                            std::cout << "🚀 Video Data Channel Connected. Streaming Webcam [Session #" << this_session << "]." << std::endl;
                             streaming_allowed = true;
                         });
                         
-                        video_channel->onClosed([&]() { 
-                            std::cout << "🛑 Video Data Channel Closed." << std::endl;
+                        video_channel->onClosed([&, this_session]() { 
                             std::lock_guard<std::mutex> stream_lock(connection_mutex);
+                            if (this_session != current_session_id) return;
+                            std::cout << "🛑 Video Data Channel Closed [Session #" << this_session << "]." << std::endl;
                             streaming_allowed = false; 
                         });
                     }
                 });
 
-                local_pc->onStateChange([&](rtc::PeerConnection::State state) {
-                    std::cout << "[*] WebRTC State Change: " << state << std::endl;
-                    // 🔌 Crucial: Treat Disconnected and Failed instantly as a tear-down state
+                local_pc->onStateChange([&, this_session, local_pc](rtc::PeerConnection::State state) {
+                    std::cout << "[*] WebRTC State Change: " << state << " [Session #" << this_session << "]" << std::endl;
                     if (state == rtc::PeerConnection::State::Failed || 
                         state == rtc::PeerConnection::State::Disconnected || 
                         state == rtc::PeerConnection::State::Closed) {
-                        std::cout << "⚠️ Connection link failure detected. Actively purging old context..." << std::endl;
-                        std::thread([]() { reset_webrtc_connection(); }).detach();
+                        
+                        std::thread([&, this_session, local_pc]() {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                            std::lock_guard<std::mutex> state_lock(connection_mutex);
+                            
+                            if (this_session == current_session_id) {
+                                std::cout << "⚠️ Processing active context drop loop for Generation #" << this_session << std::endl;
+                                clear_active_session_pointers();
+                                try { local_pc->close(); } catch(...) {}
+                                std::cout << "✅ Resources cleared. Instantly ready for new connection offers." << std::endl;
+                            } else {
+                                std::cout << "ℹ️ Suppressed legacy session teardown request for validation ID #" << this_session << std::endl;
+                            }
+                        }).detach();
                     }
                 });
 
@@ -205,7 +243,11 @@ int main() {
                     local_pc->setRemoteDescription(rtc::Description(sdp, "offer"));
                 } catch (const std::exception& e) {
                     std::cerr << "❌ Failed to set Remote Description: " << e.what() << std::endl;
-                    std::thread([]() { reset_webrtc_connection(); }).detach();
+                    std::lock_guard<std::mutex> err_lock(connection_mutex);
+                    if (this_session == current_session_id) {
+                        clear_active_session_pointers();
+                        try { local_pc->close(); } catch(...) {}
+                    }
                 }
 
             } else if (type == "ice") {
@@ -224,8 +266,12 @@ int main() {
                 }
                 
             } else if (type == "disconnect") {
+                std::lock_guard<std::mutex> lock(connection_mutex);
                 std::cout << "📥 Explicit disconnect payload received from viewer." << std::endl;
-                std::thread([]() { reset_webrtc_connection(); }).detach();
+                if (pc) {
+                    try { pc->close(); } catch (...) {}
+                }
+                clear_active_session_pointers();
             }
 
         } catch (const std::exception& e) {
@@ -285,7 +331,12 @@ int main() {
 
     running_capture = false;
     frame_cv.notify_all();
-    reset_webrtc_connection();
+    
+    {
+        std::lock_guard<std::mutex> lock(connection_mutex);
+        if (pc) { try { pc->close(); } catch(...) {} }
+        clear_active_session_pointers();
+    }
     
     if (presence_thread.joinable()) presence_thread.join();
     if (capture_thread.joinable()) capture_thread.join();
