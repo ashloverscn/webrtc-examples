@@ -145,13 +145,16 @@ int main() {
                     viewer_id = payload.value("from", "");
                     std::cout << "📥 Received Offer from " << viewer_id << " | Staging Session #" << this_session << "..." << std::endl;
                     
-                    // Isolate raw pointer away from the shared global space before configuring a new one
                     if (pc) {
                         old_pc_to_destroy = pc;
                     }
                     clear_active_session_pointers();
 
                     pc = std::make_shared<rtc::PeerConnection>(config);
+                    
+                    // FIX: Explicitly create/bind the video data channel handle immediately.
+                    // This intercepts the channel before parsing the offer so it doesn't get skipped.
+                    video_channel = pc->createDataChannel("video-stream");
                 }
 
                 // Destroy the background WebRTC thread handle safely out-of-lock
@@ -163,6 +166,22 @@ int main() {
 
                 // Keep local shared pointer reference bound inside closures
                 std::shared_ptr<rtc::PeerConnection> local_pc = pc;
+                std::shared_ptr<rtc::DataChannel> local_dc = video_channel;
+
+                // Configure data channel callbacks directly on our active tracking pointer
+                local_dc->onOpen([&, this_session]() {
+                    std::lock_guard<std::mutex> stream_lock(connection_mutex);
+                    if (this_session != current_session_id) return;
+                    std::cout << "🚀 Video Data Channel Connected. Streaming test.mp4 [Session #" << this_session << "]." << std::endl;
+                    streaming_allowed = true;
+                });
+                
+                local_dc->onClosed([&, this_session]() { 
+                    std::lock_guard<std::mutex> stream_lock(connection_mutex);
+                    if (this_session != current_session_id) return;
+                    std::cout << "🛑 Video Data Channel Closed [Session #" << this_session << "]." << std::endl;
+                    streaming_allowed = false; 
+                });
 
                 local_pc->onLocalDescription([&, client_ptr = &mqtt_client, this_session](rtc::Description description) {
                     {
@@ -190,6 +209,7 @@ int main() {
                     try { client_ptr->publish(TOPIC, ice.dump()); } catch (...) {}
                 });
 
+                // Fallback catch-all logic if browser handles re-negotiations unexpectedly later
                 local_pc->onDataChannel([&, this_session](std::shared_ptr<rtc::DataChannel> dc) {
                     if (dc->label() == "video-stream") {
                         std::lock_guard<std::mutex> dc_lock(connection_mutex);
@@ -200,14 +220,13 @@ int main() {
                         video_channel->onOpen([&, this_session]() {
                             std::lock_guard<std::mutex> stream_lock(connection_mutex);
                             if (this_session != current_session_id) return;
-                            std::cout << "🚀 Video Data Channel Connected. Streaming test.mp4 [Session #" << this_session << "]." << std::endl;
+                            std::cout << "🚀 Video Data Channel Connected (Fallback). [Session #" << this_session << "]." << std::endl;
                             streaming_allowed = true;
                         });
                         
                         video_channel->onClosed([&, this_session]() { 
                             std::lock_guard<std::mutex> stream_lock(connection_mutex);
                             if (this_session != current_session_id) return;
-                            std::cout << "🛑 Video Data Channel Closed [Session #" << this_session << "]." << std::endl;
                             streaming_allowed = false; 
                         });
                     }
