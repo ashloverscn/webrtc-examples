@@ -64,7 +64,7 @@ void clear_active_session_pointers() {
 
 // --- OpenCV Webcam Loop (Threaded for Windows DirectShow Device 0) ---
 void opencv_video_loop() {
-    cv::VideoCapture video_capture(0, cv::CAP_DSHOW);
+    cv::VideoCapture video_capture(0, cv::CAP_V4L2);
     if (!video_capture.isOpened()) {
         std::cerr << "❌ Windows Error: Could not open webcam at index 0 using DirectShow!" << std::endl;
         running_capture = false;
