@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>WebRTC Video (MQTT Signaling)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <style>
+    :root {
+      --bg-gradient: linear-gradient(135deg, #0f0c20 0%, #06060c 100%);
+      --panel-bg: rgba(22, 22, 38, 0.7);
+      --panel-border: rgba(255, 255, 255, 0.08);
+      --accent-color: #5856d6;
+      --accent-hover: #434190;
+      --text-main: #f3f4f6;
+      --text-muted: #9ca3af;
+      --status-online: #34d399;
+      --status-lag: #fbbf24;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100vw;
+      height: 100vh;
+      background: #000;
+      color: var(--text-main);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      overflow: hidden;
+    }
+
+    /* Modern Layout Container */
+    .dashboard {
+      display: grid;
+      grid-template-columns: 1fr;
+      width: 100%;
+      height: 100%;
+      position: relative;
+    }
+
+    @media (min-width: 992px) {
+      .dashboard {
+        grid-template-columns: 1fr 340px;
+      }
+    }
+
+    /* Immersive Video Zone - Expands completely inside F11 */
+    .video-container {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      background: #000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0;
+      padding: 0;
+    }
+
+    video {
+      width: 100%;
+      height: 100%;
+      max-width: 100%;
+      max-height: 100%;
+      /* 
+         'contain' preserves the exact aspect ratio with clean black bars.
+         To completely stretch the stream edge-to-edge with zero black borders, 
+         change this to 'object-fit: cover;'.
+      */
+      object-fit: contain; 
+      background: #000;
+      transition: all 0.2s ease;
+    }
+
+    /* Glassmorphic Sidebar Drawer */
+    .sidebar {
+      background: var(--panel-bg);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-left: 1px solid var(--panel-border);
+      display: flex;
+      flex-direction: column;
+      padding: 24px;
+      overflow-y: auto;
+      z-index: 5;
+    }
+
+    /* Responsive mobile/fullscreen overlay variant override */
+    @media (max-width: 991px) {
+      .sidebar {
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: 300px;
+        transform: translateX(100%);
+        transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+      .sidebar.open {
+        transform: translateX(0);
+        box-shadow: -10px 0 30px rgba(0,0,0,0.5);
+      }
+    }
+
+    h2 {
+      margin: 0 0 4px 0;
+      font-size: 1.3rem;
+      font-weight: 600;
+      letter-spacing: -0.025em;
+    }
+
+    .subtitle {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      margin-bottom: 24px;
+    }
+
+    #peerList {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .section-title {
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      font-weight: 700;
+    }
+
+    #peers {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    #peers li {
+      padding: 12px 16px;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      font-size: 0.9rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      transition: all 0.2s ease;
+    }
+
+    #peers li.clickable {
+      cursor: pointer;
+    }
+
+    #peers li.clickable:hover {
+      background: rgba(88, 86, 214, 0.15);
+      border-color: rgba(88, 86, 214, 0.3);
+      transform: translateY(-1px);
+    }
+
+    #peers li.me {
+      background: rgba(255, 255, 255, 0.01);
+      border-style: dashed;
+      opacity: 0.7;
+      cursor: default;
+    }
+
+    #peers li.offline {
+      opacity: 0.5;
+      font-style: italic;
+      cursor: default;
+    }
+
+    /* Status Indicators */
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--text-muted);
+      display: inline-block;
+    }
+
+    .status-dot.active { background: var(--status-online); box-shadow: 0 0 8px var(--status-online); }
+    .status-dot.lag { background: var(--status-lag); }
+
+    /* Action Trigger Control Toggle Elements */
+    #toggleBtn {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      width: 44px;
+      height: 44px;
+      border: 1px solid var(--panel-border);
+      background: var(--panel-bg);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      color: white;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+      z-index: 10;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      transition: all 0.2s ease;
+    }
+
+    #toggleBtn:hover {
+      transform: scale(1.05);
+      background: rgba(30, 30, 50, 0.9);
+    }
+  </style>
+</head>
+<body>
+
+<button id="toggleBtn" onclick="togglePeerList()">☰</button>
+
+<div class="dashboard">
+  <!-- Dynamic Scaling Window viewport Area -->
+  <div class="video-container">
+    <video id="remoteVideo" autoplay playsinline></video>
+  </div>
+
+  <!-- Functional Management Panel Controls Area -->
+  <div class="sidebar" id="sidebar">
+    <h2>RTC Video Hub</h2>
+    <div class="subtitle">MQTT Infrastructure Matrix</div>
+    
+    <div id="peerList">
+      <div class="section-title">Active Mesh Nodes</div>
+      <ul id="peers"></ul>
+    </div>
+  </div>
+</div>
+
+<script>
+  const brokerURL = 'wss://e5122a5328ea4986a0295fa6e037655a.s2.eu.hivemq.cloud:8884/mqtt';
+  const signalingTopic = 'webrtc/signaling';
+
+  // Persistence logic preserved exactly
+  const peerId = localStorage.getItem('persistentPeerId') || 'peer_' + Math.random().toString(36).substr(2, 6);
+  localStorage.setItem('persistentPeerId', peerId);
+
+  let targetPeerId = '';
+  let pc;
+  const peerRegistry = {};
+
+  const client = mqtt.connect(brokerURL, {
+    clientId: 'signaling_' + peerId,
+    username: 'admin',
+    password: 'admin1234S',
+    protocol: 'wss'
+  });
+
+  client.on('connect', () => {
+    client.subscribe(signalingTopic);
+    sendPresence();
+    setInterval(sendPresence, 1000);
+  });
+
+  client.on('message', (_, payload) => {
+    try {
+      const msg = JSON.parse(payload.toString());
+      if (msg.type === 'presence') {
+        peerRegistry[msg.from] = Date.now();
+        return;
+      }
+
+      if (msg.to !== peerId) return;
+      targetPeerId = msg.from;
+
+      // Routing logic preserved exactly
+      if (msg.type === 'answer') handleAnswer(msg.data);
+      if (msg.type === 'ice') handleRemoteICE(msg.data);
+    } catch (e) { console.error("MQTT Message Error", e); }
+  });
+
+  function sendPresence() {
+    client.publish(signalingTopic, JSON.stringify({ type: 'presence', from: peerId }));
+  }
+
+  function togglePeerList() {
+    const sidebar = document.getElementById("sidebar");
+    sidebar.classList.toggle("open");
+  }
+
+  function updatePeerList() {
+    const now = Date.now();
+    const ul = document.getElementById('peers');
+    ul.innerHTML = '';
+
+    const me = document.createElement('li');
+    me.className = 'me';
+    me.innerHTML = `<span>${peerId}</span> <span class="status-dot"></span>`;
+    ul.appendChild(me);
+
+    for (const pid in peerRegistry) {
+      if (pid === peerId) continue;
+      const age = now - peerRegistry[pid];
+      if (age > 5000) { delete peerRegistry[pid]; continue; }
+
+      const li = document.createElement('li');
+      if (age > 2000) {
+        li.className = 'offline';
+        li.innerHTML = `<span>${pid}</span> <span class="status-dot lag"></span>`;
+      } else {
+        li.className = 'clickable';
+        li.innerHTML = `<span>${pid}</span> <span class="status-dot active"></span>`;
+        li.onclick = () => {
+          targetPeerId = pid;
+          initiateCall();
+          // Auto close sidebar drawer loop on smaller display breakpoints once tapped
+          if(window.innerWidth < 992) togglePeerList();
+        };
+      }
+      ul.appendChild(li);
+    }
+  }
+  setInterval(updatePeerList, 1000);
+
+  // WebRTC Engine Core Logic Preserved
+  async function initiateCall() {
+    if (pc) pc.close(); 
+        
+    pc = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+    });
+
+    pc.addTransceiver('video', { direction: 'recvonly' });
+
+    pc.ontrack = e => {
+      console.log("Remote track received");
+      const rv = document.getElementById("remoteVideo");
+      rv.srcObject = e.streams[0];
+    };
+
+    pc.onicecandidate = e => {
+      if (e.candidate) sendSignal('ice', e.candidate);
+    };
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    sendSignal('offer', { sdp: offer.sdp, type: offer.type });
+  }
+
+  async function handleAnswer(answer) {
+    if (!pc) return;
+    await pc.setRemoteDescription(new RTCSessionDescription(answer));
+  }
+
+  async function handleRemoteICE(candidate) {
+    if (!pc) return;
+    try {
+      await pc.addIceCandidate(new RTCIceCandidate(candidate));
+    } catch (e) { console.error("Error adding ICE", e); }
+  }
+
+  function sendSignal(type, data) {
+    if (!targetPeerId) return;
+    client.publish(
+      signalingTopic,
+      JSON.stringify({ type, from: peerId, to: targetPeerId, data })
+    );
+  }
+</script>
+</body>
+</html>
