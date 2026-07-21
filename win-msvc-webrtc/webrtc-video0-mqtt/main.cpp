@@ -62,11 +62,29 @@ void clear_active_session_pointers() {
     }
 }
 
-// --- OpenCV Webcam Loop (Threaded for Windows DirectShow Device 0) ---
+// --- OpenCV Webcam Loop (Adaptive Platform Backend Selection) ---
 void opencv_video_loop() {
-    cv::VideoCapture video_capture(0, cv::CAP_V4L2);
+    // Determine native capture API backend based on host platform
+#if defined(_WIN32) || defined(_WIN64)
+    int api_preference = cv::CAP_DSHOW;
+    const char* os_name = "Windows (DirectShow)";
+#elif defined(__linux__)
+    int api_preference = cv::CAP_V4L2;
+    const char* os_name = "Linux (V4L2)";
+#else
+    int api_preference = cv::CAP_ANY;
+    const char* os_name = "Generic System Backend";
+#endif
+
+    cv::VideoCapture video_capture(0, api_preference);
+    
+    // Fallback attempt if explicit API backend fails
     if (!video_capture.isOpened()) {
-        std::cerr << "❌ Windows Error: Could not open webcam at index 0 using DirectShow!" << std::endl;
+        video_capture.open(0, cv::CAP_ANY);
+    }
+
+    if (!video_capture.isOpened()) {
+        std::cerr << "❌ Error: Could not open webcam at index 0 on " << os_name << "!" << std::endl;
         running_capture = false;
         return;
     }
@@ -147,7 +165,6 @@ int main() {
 
                     std::cout << "📥 Offer Received. Staging Session #" << this_session << "..." << std::endl;
                     
-                    // Isolate old peer connection instantly so back-to-back offers cannot cross lines
                     if (pc) {
                         old_pc_to_destroy = pc;
                     }
@@ -157,14 +174,12 @@ int main() {
                     pc = std::make_shared<rtc::PeerConnection>(config);
                 }
 
-                // Explicitly tear down old native context safely out-of-lock 
                 if (old_pc_to_destroy) {
                     std::cout << "🔄 Clearing historical native STUN agent context safely..." << std::endl;
                     try { old_pc_to_destroy->close(); } catch(...) {}
                     old_pc_to_destroy.reset();
                 }
 
-                // Cache a local frame reference to keep callback configurations thread-isolated
                 std::shared_ptr<rtc::PeerConnection> local_pc = pc;
 
                 local_pc->onLocalDescription([&, client_ptr = &mqtt_client, this_session](rtc::Description description) {
@@ -298,8 +313,16 @@ int main() {
         }
     });
 
+#if defined(_WIN32) || defined(_WIN64)
+    std::string platform_label = "WINDOWS";
+#elif defined(__linux__)
+    std::string platform_label = "LINUX";
+#else
+    std::string platform_label = "CROSS-PLATFORM";
+#endif
+
     std::cout << "============================================" << std::endl;
-    std::cout << "🎥 WINDOWS WEBCAM 0 TRANSCEIVER ONLINE" << std::endl;
+    std::cout << "🎥 " << platform_label << " WEBCAM 0 TRANSCEIVER ONLINE" << std::endl;
     std::cout << "DEVICE ID: " << peer_id << std::endl;
     std::cout << "============================================" << std::endl;
 
