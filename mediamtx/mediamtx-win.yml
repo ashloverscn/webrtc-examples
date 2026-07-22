@@ -140,11 +140,11 @@ apiAddress: :9997
 apiEncryption: no
 # Path to the server key. This is needed only when encryption is yes.
 # This can be generated with:
-# openssl genrsa -out server.key 2048
-# openssl req -new -x509 -sha256 -key server.key -out server.crt -days 3650
-apiServerKey: server.key
+# openssl genrsa -out auto.key 2048
+# openssl req -new -x509 -sha256 -key auto.key -out auto.crt -days 3650
+apiServerKey: auto.key
 # Path to the server certificate.
-apiServerCert: server.crt
+apiServerCert: auto.crt
 # Value of the Access-Control-Allow-Origin header provided in every HTTP response.
 apiAllowOrigin: '*'
 # List of IPs or CIDRs of proxies placed before the HTTP server.
@@ -163,11 +163,11 @@ metricsAddress: :9998
 metricsEncryption: no
 # Path to the server key. This is needed only when encryption is yes.
 # This can be generated with:
-# openssl genrsa -out server.key 2048
-# openssl req -new -x509 -sha256 -key server.key -out server.crt -days 3650
-metricsServerKey: server.key
+# openssl genrsa -out auto.key 2048
+# openssl req -new -x509 -sha256 -key auto.key -out auto.crt -days 3650
+metricsServerKey: auto.key
 # Path to the server certificate.
-metricsServerCert: server.crt
+metricsServerCert: auto.crt
 # Value of the Access-Control-Allow-Origin header provided in every HTTP response.
 metricsAllowOrigin: '*'
 # List of IPs or CIDRs of proxies placed before the HTTP server.
@@ -186,11 +186,11 @@ pprofAddress: :9999
 pprofEncryption: no
 # Path to the server key. This is needed only when encryption is yes.
 # This can be generated with:
-# openssl genrsa -out server.key 2048
-# openssl req -new -x509 -sha256 -key server.key -out server.crt -days 3650
-pprofServerKey: server.key
+# openssl genrsa -out auto.key 2048
+# openssl req -new -x509 -sha256 -key auto.key -out auto.crt -days 3650
+pprofServerKey: auto.key
 # Path to the server certificate.
-pprofServerCert: server.crt
+pprofServerCert: auto.crt
 # Value of the Access-Control-Allow-Origin header provided in every HTTP response.
 pprofAllowOrigin: '*'
 # List of IPs or CIDRs of proxies placed before the HTTP server.
@@ -209,11 +209,11 @@ playbackAddress: :9996
 playbackEncryption: no
 # Path to the server key. This is needed only when encryption is yes.
 # This can be generated with:
-# openssl genrsa -out server.key 2048
-# openssl req -new -x509 -sha256 -key server.key -out server.crt -days 3650
-playbackServerKey: server.key
+# openssl genrsa -out auto.key 2048
+# openssl req -new -x509 -sha256 -key auto.key -out auto.crt -days 3650
+playbackServerKey: auto.key
 # Path to the server certificate.
-playbackServerCert: server.crt
+playbackServerCert: auto.crt
 # Value of the Access-Control-Allow-Origin header provided in every HTTP response.
 playbackAllowOrigin: '*'
 # List of IPs or CIDRs of proxies placed before the HTTP server.
@@ -252,11 +252,11 @@ multicastRTPPort: 8002
 multicastRTCPPort: 8003
 # Path to the server key. This is needed only when encryption is "strict" or "optional".
 # This can be generated with:
-# openssl genrsa -out server.key 2048
-# openssl req -new -x509 -sha256 -key server.key -out server.crt -days 3650
-rtspServerKey: server.key
+# openssl genrsa -out auto.key 2048
+# openssl req -new -x509 -sha256 -key auto.key -out auto.crt -days 3650
+rtspServerKey: auto.key
 # Path to the server certificate. This is needed only when encryption is "strict" or "optional".
-rtspServerCert: server.crt
+rtspServerCert: auto.crt
 # Authentication methods. Available are "basic" and "digest".
 # "digest" doesn't provide any additional security and is available for compatibility only.
 rtspAuthMethods: [basic]
@@ -275,11 +275,11 @@ rtmpEncryption: "no"
 rtmpsAddress: :1936
 # Path to the server key. This is needed only when encryption is "strict" or "optional".
 # This can be generated with:
-# openssl genrsa -out server.key 2048
-# openssl req -new -x509 -sha256 -key server.key -out server.crt -days 3650
-rtmpServerKey: server.key
+# openssl genrsa -out auto.key 2048
+# openssl req -new -x509 -sha256 -key auto.key -out auto.crt -days 3650
+rtmpServerKey: auto.key
 # Path to the server certificate. This is needed only when encryption is "strict" or "optional".
-rtmpServerCert: server.crt
+rtmpServerCert: auto.crt
 
 ###############################################
 # Global settings -> HLS server
@@ -293,11 +293,11 @@ hlsAddress: :8888
 hlsEncryption: no
 # Path to the server key. This is needed only when encryption is yes.
 # This can be generated with:
-# openssl genrsa -out server.key 2048
-# openssl req -new -x509 -sha256 -key server.key -out server.crt -days 3650
-hlsServerKey: server.key
+# openssl genrsa -out auto.key 2048
+# openssl req -new -x509 -sha256 -key auto.key -out auto.crt -days 3650
+hlsServerKey: auto.key
 # Path to the server certificate.
-hlsServerCert: server.crt
+hlsServerCert: auto.crt
 # Value of the Access-Control-Allow-Origin header provided in every HTTP response.
 # This allows to play the HLS stream from an external website.
 hlsAllowOrigin: '*'
@@ -351,11 +351,11 @@ webrtcAddress: :8889
 webrtcEncryption: no
 # Path to the server key.
 # This can be generated with:
-# openssl genrsa -out server.key 2048
-# openssl req -new -x509 -sha256 -key server.key -out server.crt -days 3650
-webrtcServerKey: server.key
+# openssl genrsa -out auto.key 2048
+# openssl req -new -x509 -sha256 -key auto.key -out auto.crt -days 3650
+webrtcServerKey: auto.key
 # Path to the server certificate.
-webrtcServerCert: server.crt
+webrtcServerCert: auto.crt
 # Value of the Access-Control-Allow-Origin header provided in every HTTP response.
 # This allows to play the WebRTC stream from an external website.
 webrtcAllowOrigin: '*'
@@ -438,8 +438,8 @@ pathDefaults:
   # If the source is a URL, and the source certificate is self-signed
   # or invalid, you can provide the fingerprint of the certificate in order to
   # validate it anyway. It can be obtained by running:
-  # openssl s_client -connect source_ip:source_port </dev/null 2>/dev/null | sed -n '/BEGIN/,/END/p' > server.crt
-  # openssl x509 -in server.crt -noout -fingerprint -sha256 | cut -d "=" -f2 | tr -d ':'
+  # openssl s_client -connect source_ip:source_port </dev/null 2>/dev/null | sed -n '/BEGIN/,/END/p' > auto.crt
+  # openssl x509 -in auto.crt -noout -fingerprint -sha256 | cut -d "=" -f2 | tr -d ':'
   sourceFingerprint:
   # If the source is a URL, it will be pulled only when at least
   # one reader is connected, saving bandwidth.
