@@ -1,228 +1,426 @@
-#include <opencv2/opencv.hpp>
+#define PAHO_MQTTPP_IMPORTS 0
+
 #include <iostream>
 #include <string>
 #include <vector>
 #include <thread>
+#include <mutex>
+#include <condition_variable>
 #include <chrono>
+#include <memory>
+#include <random>
+#include <atomic>
+#include <unordered_set>
 
-// Windows Networking & System Headers
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <iphlpapi.h>
+#include <opencv2/opencv.hpp>
+#include <opencv2/core/utils/logger.hpp>
+#include <nlohmann/json.hpp>
+#include <rtc/rtc.hpp>
+#include <httplib.h>
 
-// Tell MSVC to link against the required Windows network libraries
-#pragma comment(lib, "Ws2_32.lib")
-#pragma comment(lib, "IPHLPAPI.lib")
+using json = nlohmann::json;
 
-#define BIND_PORT 8080
-#define BUFFER_SIZE 2048
+const int WIDTH = 640;
+const int HEIGHT = 480;
+const uint16_t PORT = 8889;
+const std::string PORTMAP_ENDPOINT = "ashloverscn-58056.portmap.host:58056";
 
-/**
- * @brief Handles individual client connections in an isolated thread context using Winsock2.
- * @param client_socket Open SOCKET handle for the connected browser peer.
- */
-void execute_client_pipeline(SOCKET client_socket) {
-    std::string html_index_payload =
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/html\r\n"
-        "Connection: close\r\n"
-        "\r\n"
-        "<!DOCTYPE html>\n<html>\n<head>\n"
-        "<title>Pi Low-Latency MJPEG Engine (Windows)</title>\n"
-        "<style>\n"
-        "  body { background-color: #0f1115; color: #e2e8f0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; margin: 0; padding: 20px; }\n"
-        "  .container { max-width: 960px; margin: 0 auto; background: #1a202c; padding: 25px; border-radius: 12px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.5); }\n"
-        "  h1 { color: #38bdf8; margin-top: 0; font-weight: 600; }\n"
-        "  .stream-viewport { max-width: 100%; height: auto; border: 4px solid #334155; border-radius: 8px; background: #000; }\n"
-        "  .status-tag { display: inline-block; background: #16a34a; color: white; padding: 4px 12px; border-radius: 9999px; font-size: 0.85rem; margin-top: 10px; font-weight: bold; }\n"
-        "</style>\n</head>\n<body>\n"
-        "<div class='container'>\n"
-        "  <h1>Windows High-Density Media Server</h1>\n"
-        "  <img src='/stream' class='stream-viewport' alt='Live Video Feed Node Loading...' />\n"
-        "  <br/><span class='status-tag'>ENGINE ACTIVE (WIN_WINSOCK)</span>\n"
-        "</div>\n</body>\n</html>\n";
+std::mutex frame_mutex;
+std::condition_variable frame_cv;
+std::vector<uint8_t> latest_frame_bytes;
+bool frame_ready = false;
+bool running_capture = false;
 
-    std::vector<char> request_buffer(BUFFER_SIZE, 0);
-    int read_bytes = recv(client_socket, request_buffer.data(), static_cast<int>(request_buffer.size() - 1), 0);
+// Synchronizing state transitions between signaling thread and delivery thread
+std::mutex connection_mutex;
+bool streaming_allowed = false;
+std::shared_ptr<rtc::PeerConnection> pc;
+std::shared_ptr<rtc::DataChannel> video_channel;
+std::string viewer_id = "";
 
-    if (read_bytes <= 0) {
-        closesocket(client_socket);
+// Active WebSocket client sessions
+std::mutex clients_mutex;
+std::unordered_set<std::shared_ptr<rtc::WebSocket>> active_websockets;
+std::shared_ptr<rtc::WebSocket> active_viewer_ws = nullptr;
+
+uint64_t current_session_id = 0;
+
+std::string generate_peer_id() {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> distr(1000, 9999);
+    return "video0_cpp_" + std::to_string(distr(gen));
+}
+
+std::string peer_id = generate_peer_id();
+
+void clear_active_session_pointers() {
+    streaming_allowed = false;
+    viewer_id = "";
+    active_viewer_ws = nullptr;
+    if (video_channel) {
+        try { video_channel->close(); } catch (...) {}
+        video_channel.reset();
+    }
+    if (pc) {
+        pc.reset();
+    }
+}
+
+// --- OpenCV Webcam Loop ---
+void opencv_video_loop() {
+    cv::VideoCapture video_capture(0, cv::CAP_ANY);
+
+    if (!video_capture.isOpened()) {
+        std::cerr << "❌ Error: Could not open webcam at index 0!" << std::endl;
+        running_capture = false;
         return;
     }
 
-    std::string http_request_string(request_buffer.data());
+    video_capture.set(cv::CAP_PROP_FRAME_WIDTH, WIDTH);
+    video_capture.set(cv::CAP_PROP_FRAME_HEIGHT, HEIGHT);
+    
+    auto frame_duration = std::chrono::milliseconds(33);
+    cv::Mat frame;
+    std::vector<uint8_t> jpeg_buffer;
+    std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, 75};
 
-    // Evaluate Routing Path
-    if (http_request_string.find("GET /stream") != std::string::npos) {
+    while (running_capture) {
+        auto start_time = std::chrono::steady_clock::now();
 
-        std::string mjpeg_init_header =
-            "HTTP/1.1 200 OK\r\n"
-            "Connection: close\r\n"
-            "Cache-Control: no-cache, private\r\n"
-            "Pragma: no-cache\r\n"
-            "Content-Type: multipart/x-mixed-replace; boundary=frameboundary\r\n\r\n";
-
-        // Windows doesn't use MSG_NOSIGNAL; drop flag to 0
-        if (send(client_socket, mjpeg_init_header.c_str(), static_cast<int>(mjpeg_init_header.length()), 0) == SOCKET_ERROR) {
-            closesocket(client_socket);
-            return;
+        video_capture >> frame;
+        if (frame.empty()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
         }
 
-        cv::VideoCapture video_capture_engine(0, cv::CAP_DSHOW);
-        if (!video_capture_engine.isOpened()) {
-            std::cerr << "[CRITICAL] Worker Thread Failure: Unable to open webcam device 0." << std::endl;
-            closesocket(client_socket);
-            return;
+        if (frame.cols != WIDTH || frame.rows != HEIGHT) {
+            cv::resize(frame, frame, cv::Size(WIDTH, HEIGHT));
         }
 
-        // Configure webcam
-        video_capture_engine.set(cv::CAP_PROP_FRAME_WIDTH, 1280);
-        video_capture_engine.set(cv::CAP_PROP_FRAME_HEIGHT, 720);
-        video_capture_engine.set(cv::CAP_PROP_FPS, 30);
+        cv::imencode(".jpg", frame, jpeg_buffer, params);
 
-        cv::Mat continuous_frame_matrix;
-        std::vector<uchar> compressed_jpeg_bitstream;
-        std::vector<int> compression_parameters = { cv::IMWRITE_JPEG_QUALITY, 75 };
-
-        std::cout << "[INFO] Stream initialization verified. Inbound pipe bound to client handle." << std::endl;
-
-        while (true) {
-            video_capture_engine >> continuous_frame_matrix;
-
-            if (continuous_frame_matrix.empty()) {
-                video_capture_engine.set(cv::CAP_PROP_POS_FRAMES, 0);
-                continue;
-            }
-
-            cv::imencode(".jpg", continuous_frame_matrix, compressed_jpeg_bitstream, compression_parameters);
-
-            std::string individual_frame_boundary_header =
-                "--frameboundary\r\n"
-                "Content-Type: image/jpeg\r\n"
-                "Content-Length: " + std::to_string(compressed_jpeg_bitstream.size()) + "\r\n\r\n";
-
-            // Sequential transport writes. If client disconnects, send will return SOCKET_ERROR.
-            if (send(client_socket, individual_frame_boundary_header.c_str(), static_cast<int>(individual_frame_boundary_header.length()), 0) == SOCKET_ERROR) break;
-            if (send(client_socket, reinterpret_cast<const char*>(compressed_jpeg_bitstream.data()), static_cast<int>(compressed_jpeg_bitstream.size()), 0) == SOCKET_ERROR) break;
-            if (send(client_socket, "\r\n", 2, 0) == SOCKET_ERROR) break;
-
-            std::this_thread::sleep_for(std::chrono::milliseconds(33));
+        {
+            std::lock_guard<std::mutex> lock(frame_mutex);
+            latest_frame_bytes = std::move(jpeg_buffer);
+            frame_ready = true;
         }
-
-        video_capture_engine.release();
-        std::cout << "[INFO] Pipeline terminated. Connection cleanly closed." << std::endl;
+        frame_cv.notify_one();
+        
+        auto processing_time = std::chrono::steady_clock::now() - start_time;
+        if (processing_time < frame_duration) {
+            std::this_thread::sleep_for(frame_duration - processing_time);
+        }
     }
-    else {
-        send(client_socket, html_index_payload.c_str(), static_cast<int>(html_index_payload.length()), 0);
-    }
-
-    closesocket(client_socket);
+    video_capture.release();
 }
 
 int main() {
-    // 1. Initialize Winsock Runtime Environment
-    WSADATA wsa_data;
-    int wsa_startup_result = WSAStartup(MAKEWORD(2, 2), &wsa_data);
-    if (wsa_startup_result != 0) {
-        std::cerr << "[FATAL] Winsock initialization failed with error code: " << wsa_startup_result << std::endl;
-        return EXIT_FAILURE;
-    }
+    cv::utils::logging::setLogLevel(cv::utils::logging::LOG_LEVEL_SILENT);
+    rtc::InitLogger(rtc::LogLevel::Warning);
 
-    // 2. Instantiate TCP Socket Endpoint Handler
-    SOCKET master_socket_descriptor = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (master_socket_descriptor == INVALID_SOCKET) {
-        std::cerr << "[FATAL] Failed to create socket descriptor context: " << WSAGetLastError() << std::endl;
-        WSACleanup();
-        return EXIT_FAILURE;
-    }
+    running_capture = true;
+    std::thread capture_thread(opencv_video_loop);
 
-    // 3. Configure Socket Re-use Directives
-    char optimization_flag_value = 1;
-    if (setsockopt(master_socket_descriptor, SOL_SOCKET, SO_REUSEADDR, &optimization_flag_value, sizeof(optimization_flag_value)) == SOCKET_ERROR) {
-        std::cerr << "[FATAL] Socket configuration optimization routine failed." << std::endl;
-        closesocket(master_socket_descriptor);
-        WSACleanup();
-        return EXIT_FAILURE;
-    }
+    rtc::Configuration config;
+    config.iceServers.emplace_back("stun:stun.l.google.com:19302");
 
-    // 4. Map Memory Allocation Parameters to Address Structures
-    sockaddr_in network_endpoint_address{};
-    network_endpoint_address.sin_family = AF_INET;
-    network_endpoint_address.sin_addr.s_addr = INADDR_ANY; 
-    network_endpoint_address.sin_port = htons(BIND_PORT);
+    // Initialize libdatachannel WebSocketServer for Signaling on port 8890 (internal ws pipe)
+    // To achieve single-port external tunneling via portmap, ws routes separately
+    rtc::WebSocketServer::Configuration ws_config;
+    ws_config.port = PORT + 1; // 8890 internally for WebRTC signaling websocket
+    auto ws_server = std::make_shared<rtc::WebSocketServer>(ws_config);
 
-    // 5. Bind Virtual Socket Descriptor to Hardware Port Space
-    if (bind(master_socket_descriptor, (struct sockaddr*)&network_endpoint_address, sizeof(network_endpoint_address)) == SOCKET_ERROR) {
-        std::cerr << "[FATAL] Network Interface Binding Failure on port: " << BIND_PORT << " Error: " << WSAGetLastError() << std::endl;
-        closesocket(master_socket_descriptor);
-        WSACleanup();
-        return EXIT_FAILURE;
-    }
-
-    // 6. Enter Passive Listening State
-    if (listen(master_socket_descriptor, 32) == SOCKET_ERROR) {
-        std::cerr << "[FATAL] Unable to transit system into listening state mode." << std::endl;
-        closesocket(master_socket_descriptor);
-        WSACleanup();
-        return EXIT_FAILURE;
-    }
-
-    // Dynamic extraction logic loop using Windows API to find external IP
-    std::string display_ip = "127.0.0.1";
-    ULONG out_buf_len = 15000;
-    PIP_ADAPTER_ADDRESSES addresses = (IP_ADAPTER_ADDRESSES*)malloc(out_buf_len);
-
-    if (addresses != nullptr) {
-        ULONG flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
-        DWORD result = GetAdaptersAddresses(AF_INET, flags, nullptr, addresses, &out_buf_len);
-        
-        if (result == ERROR_BUFFER_OVERFLOW) {
-            free(addresses);
-            addresses = (IP_ADAPTER_ADDRESSES*)malloc(out_buf_len);
-            result = GetAdaptersAddresses(AF_INET, flags, nullptr, addresses, &out_buf_len);
+    ws_server->onClient([config](std::shared_ptr<rtc::WebSocket> ws) {
+        {
+            std::lock_guard<std::mutex> lock(clients_mutex);
+            active_websockets.insert(ws);
         }
 
-        if (result == NO_ERROR) {
-            PIP_ADAPTER_ADDRESSES curr_adapter = addresses;
-            while (curr_adapter != nullptr) {
-                // Ignore loopback adapters and check for valid unicast IPv4 addresses
-                if (curr_adapter->IfType != IF_TYPE_SOFTWARE_LOOPBACK && curr_adapter->FirstUnicastAddress != nullptr) {
-                    sockaddr_in* ipv4 = (sockaddr_in*)curr_adapter->FirstUnicastAddress->Address.lpSockaddr;
-                    char ip_address_buffer[INET_ADDRSTRLEN];
-                    inet_ntop(AF_INET, &(ipv4->sin_addr), ip_address_buffer, INET_ADDRSTRLEN);
-                    display_ip = ip_address_buffer;
-                    break; 
-                }
-                curr_adapter = curr_adapter->Next;
-            }
-        }
-        free(addresses);
-    }
+        ws->onOpen([ws]() {
+            std::string remote_addr = ws->remoteAddress().value_or("unknown");
+            std::cout << "✅ Viewer WebSocket Connected: " << remote_addr << std::endl;
+        });
 
-    std::cout << "============================================================" << std::endl;
-    std::cout << " ENGINE OPERATIONAL (MSVC Windows Native)" << std::endl;
-    std::cout << " Server live at http://" << display_ip << ":" << BIND_PORT << std::endl;
-    std::cout << "============================================================" << std::endl;
+        ws->onMessage([ws, config](std::variant<rtc::binary, rtc::string> data) {
+            if (!std::holds_alternative<rtc::string>(data)) return;
+            std::string msg_str = std::get<rtc::string>(data);
 
-    // 7. System Orchestration Infinite Loop
-    while (true) {
-        SOCKET inbound_client_socket = accept(master_socket_descriptor, nullptr, nullptr);
-
-        if (inbound_client_socket != INVALID_SOCKET) {
             try {
-                std::thread(execute_client_pipeline, inbound_client_socket).detach();
-            } catch (const std::exception& processing_exception) {
-                std::cerr << "[WARNING] Unable to delegate client handling task thread: " << processing_exception.what() << std::endl;
-                closesocket(inbound_client_socket);
+                auto payload = json::parse(msg_str);
+                std::string type = payload.value("type", "");
+
+                if (type == "offer") {
+                    std::shared_ptr<rtc::PeerConnection> old_pc_to_destroy = nullptr;
+                    uint64_t this_session = 0;
+
+                    {
+                        std::lock_guard<std::mutex> lock(connection_mutex);
+                        current_session_id++;
+                        this_session = current_session_id;
+
+                        std::cout << "📥 Offer Received. Staging Session #" << this_session << "..." << std::endl;
+                        if (pc) old_pc_to_destroy = pc;
+                        clear_active_session_pointers();
+
+                        viewer_id = payload.value("from", "viewer");
+                        active_viewer_ws = ws;
+                        pc = std::make_shared<rtc::PeerConnection>(config);
+                    }
+
+                    if (old_pc_to_destroy) {
+                        try { old_pc_to_destroy->close(); } catch(...) {}
+                        old_pc_to_destroy.reset();
+                    }
+
+                    std::shared_ptr<rtc::PeerConnection> local_pc = pc;
+
+                    local_pc->onLocalDescription([ws, this_session](rtc::Description description) {
+                        {
+                            std::lock_guard<std::mutex> lock(connection_mutex);
+                            if (this_session != current_session_id) return;
+                        }
+                        json answer = {
+                            {"type", description.typeString()},
+                            {"from", peer_id},
+                            {"to", viewer_id},
+                            {"data", {{"sdp", std::string(description)}, {"type", description.typeString()}}}
+                        };
+                        try { ws->send(answer.dump()); } catch (...) {}
+                    });
+
+                    local_pc->onLocalCandidate([ws, this_session](rtc::Candidate candidate) {
+                        {
+                            std::lock_guard<std::mutex> lock(connection_mutex);
+                            if (this_session != current_session_id) return;
+                        }
+                        json ice = {
+                            {"type", "ice"}, {"from", peer_id}, {"to", viewer_id},
+                            {"data", {{"candidate", std::string(candidate)}, {"sdpMid", candidate.mid()}, {"sdpMLineIndex", 0}}}
+                        };
+                        try { ws->send(ice.dump()); } catch (...) {}
+                    });
+
+                    local_pc->onDataChannel([&, this_session](std::shared_ptr<rtc::DataChannel> dc) {
+                        if (dc->label() == "video-stream") {
+                            std::lock_guard<std::mutex> dc_lock(connection_mutex);
+                            if (this_session != current_session_id) return;
+                            
+                            video_channel = dc;
+                            
+                            video_channel->onOpen([&, this_session]() {
+                                std::lock_guard<std::mutex> stream_lock(connection_mutex);
+                                if (this_session != current_session_id) return;
+                                std::cout << "🚀 Video Data Channel Connected. Streaming Webcam [Session #" << this_session << "]." << std::endl;
+                                streaming_allowed = true;
+                            });
+                            
+                            video_channel->onClosed([&, this_session]() { 
+                                std::lock_guard<std::mutex> stream_lock(connection_mutex);
+                                if (this_session != current_session_id) return;
+                                std::cout << "🛑 Video Data Channel Closed [Session #" << this_session << "]." << std::endl;
+                                streaming_allowed = false; 
+                            });
+                        }
+                    });
+
+                    local_pc->onStateChange([&, this_session, local_pc](rtc::PeerConnection::State state) {
+                        std::cout << "[*] WebRTC State Change: " << static_cast<int>(state) << " [Session #" << this_session << "]" << std::endl;
+                        if (state == rtc::PeerConnection::State::Failed || 
+                            state == rtc::PeerConnection::State::Disconnected || 
+                            state == rtc::PeerConnection::State::Closed) {
+                            
+                            std::thread([&, this_session, local_pc]() {
+                                std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                                std::lock_guard<std::mutex> state_lock(connection_mutex);
+                                
+                                if (this_session == current_session_id) {
+                                    std::cout << "⚠️ Processing structural drop for active Session #" << this_session << "..." << std::endl;
+                                    clear_active_session_pointers();
+                                    try { local_pc->close(); } catch(...) {}
+                                    std::cout << "✅ Resources cleared. Ready for incoming loops." << std::endl;
+                                }
+                            }).detach();
+                        }
+                    });
+
+                    try {
+                        std::string sdp = payload["data"]["sdp"];
+                        local_pc->setRemoteDescription(rtc::Description(sdp, "offer"));
+                    } catch (const std::exception& e) {
+                        std::cerr << "❌ Failed to parse Remote Offer: " << e.what() << std::endl;
+                        std::lock_guard<std::mutex> err_lock(connection_mutex);
+                        if (this_session == current_session_id) {
+                            clear_active_session_pointers();
+                            try { local_pc->close(); } catch(...) {}
+                        }
+                    }
+
+                } else if (type == "ice") {
+                    std::lock_guard<std::mutex> lock(connection_mutex);
+                    if (!pc) return;
+                    
+                    try {
+                        std::string candidate_str = payload["data"]["candidate"];
+                        std::string mid = payload["data"]["sdpMid"];
+                        if (!candidate_str.empty()) {
+                            pc->addRemoteCandidate(rtc::Candidate(candidate_str, mid));
+                        }
+                    } catch (const std::exception& e) {
+                        std::cerr << "⚠️ Dropped ICE candidate: " << e.what() << std::endl;
+                    }
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "Signaling Parse Error: " << e.what() << std::endl;
             }
+        });
+
+        ws->onClosed([ws]() {
+            std::cout << "🔌 Viewer WebSocket Disconnected." << std::endl;
+            std::lock_guard<std::mutex> lock(clients_mutex);
+            active_websockets.erase(ws);
+
+            std::lock_guard<std::mutex> conn_lock(connection_mutex);
+            if (active_viewer_ws == ws) {
+                if (pc) { try { pc->close(); } catch(...) {} }
+                clear_active_session_pointers();
+            }
+        });
+    });
+
+    // Initialize cpp-httplib Server for HTTP web pages on port 8889
+    httplib::Server http_svr;
+    std::string html_content = R"(<!DOCTYPE html>
+<html>
+<head>
+    <title>C++ WebRTC Webcam Viewer</title>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; background: #121212; color: #fff; margin-top: 50px; }
+        #remoteVideo { width: 640px; height: 480px; background: #000; border: 2px solid #444; border-radius: 8px; object-fit: contain; }
+        #status { margin: 15px; font-weight: bold; color: #ff9800; }
+    </style>
+</head>
+<body>
+    <h2>C++ OpenCV WebRTC Transceiver</h2>
+    <div id="status">Connecting to signaling server...</div>
+    <img id="remoteVideo" alt="Awaiting video stream..." />
+    <script>
+        const statusDiv = document.getElementById('status');
+        const imgElement = document.getElementById('remoteVideo');
+        
+        // Automatically maps WebSocket port to HTTP port + 1 (8890) or relative matching
+        const wsPort = 8890;
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+        const ws = new WebSocket(wsProtocol + window.location.hostname + ':' + wsPort + '/');
+        let pc = null;
+        const peer_id = "viewer_" + Math.floor(Math.random() * 9000 + 1000);
+
+        ws.onopen = async () => {
+            statusDiv.innerText = "Connected to Signaling. Initializing WebRTC PeerConnection...";
+            pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+
+            const dataChannel = pc.createDataChannel('video-stream', { ordered: false, maxRetransmits: 0 });
+            dataChannel.binaryType = 'arraybuffer';
+
+            dataChannel.onopen = () => {
+                statusDiv.innerText = "Data Channel Open. Receiving Video Stream...";
+                statusDiv.style.color = "#4caf50";
+            };
+
+            dataChannel.onmessage = (event) => {
+                const blob = new Blob([event.data], { type: 'image/jpeg' });
+                const url = URL.createObjectURL(blob);
+                imgElement.src = url;
+                imgElement.onload = () => URL.revokeObjectURL(url);
+            };
+
+            pc.onicecandidate = (event) => {
+                if (event.candidate) {
+                    ws.send(JSON.stringify({
+                        type: 'ice',
+                        from: peer_id,
+                        data: { candidate: event.candidate.candidate, sdpMid: event.candidate.sdpMid }
+                    }));
+                }
+            };
+
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+
+            ws.send(JSON.stringify({
+                type: 'offer',
+                from: peer_id,
+                data: { sdp: offer.sdp, type: offer.type }
+            }));
+        };
+
+        ws.onmessage = async (event) => {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'answer') {
+                await pc.setRemoteDescription(new RTCSessionDescription({ type: msg.data.type, sdp: msg.data.sdp }));
+                statusDiv.innerText = "Streaming Active!";
+            } else if (msg.type === 'ice') {
+                try {
+                    await pc.addIceCandidate(new RTCIceCandidate({ candidate: msg.data.candidate, sdpMid: msg.data.sdpMid }));
+                } catch (e) {
+                    console.error('Error adding received ICE candidate', e);
+                }
+            }
+        };
+
+        ws.onclose = () => { statusDiv.innerText = "Disconnected from signaling."; statusDiv.style.color = "#f44336"; };
+    </script>
+</body>
+</html>)";
+
+    http_svr.Get("/", [html_content](const httplib::Request&, httplib::Response& res) {
+        res.set_content(html_content, "text/html");
+    });
+
+    std::thread http_thread([&http_svr]() {
+        http_svr.listen("0.0.0.0", PORT);
+    });
+
+    std::cout << "============================================" << std::endl;
+    std::cout << "🎥 WEBCAM TRANSCEIVER ONLINE" << std::endl;
+    std::cout << "LOCAL URL  : http://localhost:" << PORT << "/" << std::endl;
+    std::cout << "PORTMAP URL: http://" << PORTMAP_ENDPOINT << "/" << std::endl;
+    std::cout << "DEVICE ID  : " << peer_id << std::endl;
+    std::cout << "============================================" << std::endl;
+
+    std::vector<uint8_t> frame_buffer;
+    while (running_capture) {
+        {
+            std::unique_lock<std::mutex> lock(frame_mutex);
+            frame_cv.wait(lock, [] { return frame_ready || !running_capture; });
+            if (!running_capture) break;
+            frame_buffer = std::move(latest_frame_bytes);
+            frame_ready = false;
+        }
+
+        std::lock_guard<std::mutex> lock(connection_mutex);
+        if (streaming_allowed && video_channel && video_channel->isOpen() && !frame_buffer.empty()) {
+            try {
+                if (video_channel->bufferedAmount() > 2 * 1024 * 1024) { 
+                    continue; 
+                }
+                video_channel->send(reinterpret_cast<const std::byte*>(frame_buffer.data()), frame_buffer.size());
+            } catch (...) {}
         }
     }
 
-    closesocket(master_socket_descriptor);
-    WSACleanup();
-    return EXIT_SUCCESS;
+    running_capture = false;
+    frame_cv.notify_all();
+    
+    {
+        std::lock_guard<std::mutex> lock(connection_mutex);
+        if (pc) { try { pc->close(); } catch(...) {} }
+        clear_active_session_pointers();
+    }
+    
+    http_svr.stop();
+    ws_server.reset();
+    if (capture_thread.joinable()) capture_thread.join();
+    if (http_thread.joinable()) http_thread.join();
+    return 0;
 }
