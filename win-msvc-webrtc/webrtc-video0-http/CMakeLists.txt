@@ -1,22 +1,47 @@
-cmake_minimum_required(VERSION 3.16)
-
-project(webrtc-video0-http LANGUAGES CXX)
+cmake_minimum_required(VERSION 3.15)
+project(webrtc-video0-mqtt-rtsp CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(OpenCV REQUIRED)
+# Force everything to match vcpkg's static compilation layout
+set(VCPKG_LIBRARY_LINKAGE static)
+set(VCPKG_CRT_LINKAGE dynamic)
 
-add_executable(webrtc-video0-http
-    main.cpp
+find_package(OpenCV REQUIRED COMPONENTS core videoio imgproc)
+find_package(nlohmann_json REQUIRED)
+find_package(LibDataChannel CONFIG REQUIRED)
+
+# cpp-httplib is no longer required since we replaced MQTT with LibDataChannel's 
+# built-in rtc::WebSocketServer, but you can keep it if you need it for other endpoints.
+include(FetchContent)
+FetchContent_Declare(
+    httplib
+    GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
+    GIT_TAG        v0.15.3
 )
+FetchContent_MakeAvailable(httplib)
 
-target_link_libraries(webrtc-video0-http PRIVATE
-    ${OpenCV_LIBS}
-    Ws2_32
-    Iphlpapi
-)
+# FFmpeg discovery via vcpkg
+find_path(FFMPEG_INCLUDE_DIR libavformat/avformat.h)
+find_library(AVFORMAT_LIB avformat)
+find_library(AVCODEC_LIB avcodec)
+find_library(AVUTIL_LIB avutil)
 
-target_include_directories(webrtc-video0-http PRIVATE
-    ${OpenCV_INCLUDE_DIRS}
+add_executable(webrtc-video0-mqtt-rtsp main.cpp)
+
+target_include_directories(webrtc-video0-mqtt-rtsp PRIVATE ${FFMPEG_INCLUDE_DIR})
+
+target_link_libraries(webrtc-video0-mqtt-rtsp PRIVATE 
+    opencv_core 
+    opencv_videoio 
+    opencv_imgproc
+    nlohmann_json::nlohmann_json
+    LibDataChannel::LibDataChannel
+    httplib::httplib
+    ${AVFORMAT_LIB}
+    ${AVCODEC_LIB}
+    ${AVUTIL_LIB}
+    ws2_32
+    crypt32
 )
