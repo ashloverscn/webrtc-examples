@@ -32,6 +32,7 @@ bool streaming_allowed = false;
 std::shared_ptr<rtc::PeerConnection> pc;
 std::shared_ptr<rtc::DataChannel> screen_channel;
 std::shared_ptr<rtc::DataChannel> control_channel;
+std::shared_ptr<rtc::DataChannel> clipboard_channel;
 uint64_t current_session_id = 0;
 
 std::mutex signaling_mutex;
@@ -60,6 +61,10 @@ void clear_active_session_pointers() {
         try { control_channel->close(); } catch (...) {}
         control_channel.reset();
     }
+    if (clipboard_channel) {
+        try { clipboard_channel->close(); } catch (...) {}
+        clipboard_channel.reset();
+    }
     if (pc) {
         try { pc->close(); } catch (...) {}
         pc.reset();
@@ -77,6 +82,60 @@ std::condition_variable frame_cv;
 ScreenFrame latest_frame;
 bool frame_ready = false;
 std::atomic<bool> running_capture(false);
+
+// Host clipboard state tracking to prevent feedback loops
+std::string last_host_clipboard_text = "";
+std::mutex host_clipboard_mutex;
+
+std::string get_windows_clipboard_text() {
+    std::string text = "";
+    if (!OpenClipboard(NULL)) return text;
+    HANDLE hData = GetClipboardData(CF_TEXT);
+    if (hData) {
+        char* pszText = static_cast<char*>(GlobalLock(hData));
+        if (pszText) {
+            text = std::string(pszText);
+            GlobalUnlock(hData);
+        }
+    }
+    CloseClipboard();
+    return text;
+}
+
+void set_windows_clipboard_text(const std::string& text) {
+    if (!OpenClipboard(NULL)) return;
+    EmptyClipboard();
+    HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, text.size() + 1);
+    if (hMem) {
+        memcpy(GlobalLock(hMem), text.c_str(), text.size() + 1);
+        GlobalUnlock(hMem);
+        SetClipboardData(CF_TEXT, hMem);
+    }
+    CloseClipboard();
+}
+
+void clipboard_monitor_loop() {
+    while (running_capture) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(800));
+        if (!running_capture) break;
+
+        std::string current_text = get_windows_clipboard_text();
+        if (!current_text.empty()) {
+            std::lock_guard<std::mutex> lock(host_clipboard_mutex);
+            if (current_text != last_host_clipboard_text) {
+                last_host_clipboard_text = current_text;
+                
+                std::lock_guard<std::mutex> conn_lock(connection_mutex);
+                if (clipboard_channel && clipboard_channel->isOpen()) {
+                    try {
+                        json msg = {{"type", "clipboard"}, {"text", current_text}};
+                        clipboard_channel->send(msg.dump());
+                    } catch (...) {}
+                }
+            }
+        }
+    }
+}
 
 int GetEncoderClsid(const WCHAR* format, CLSID* pClsid) {
     if (!format || !pClsid) return -1;
@@ -231,7 +290,6 @@ void handle_remote_input(const std::string& msg_str) {
             int screen_h = GetSystemMetrics(SM_CYSCREEN);
             if (screen_w <= 0 || screen_h <= 0) return;
 
-            // Accurate letterbox-aware mapping calculation for absolute pointer synchronization
             double img_aspect = (double)screen_w / screen_h;
             double container_aspect = (double)vw / vh;
 
@@ -289,8 +347,9 @@ void handle_remote_input(const std::string& msg_str) {
             if (delta != 0) {
                 INPUT input = {0};
                 input.type = INPUT_MOUSE;
+                input.mi.dwFlags = INPUT_MOUSE; // fixed flag setting below
                 input.mi.dwFlags = MOUSEEVENTF_WHEEL;
-                input.mi.mouseData = (DWORD)(-delta); // Standardize scroll direction
+                input.mi.mouseData = (DWORD)(-delta);
                 SendInput(1, &input, sizeof(INPUT));
             }
         }
@@ -316,8 +375,10 @@ int main() {
 
     running_capture = true;
     std::thread capture_thread;
+    std::thread clipboard_thread;
     try {
         capture_thread = std::thread(screen_capture_loop);
+        clipboard_thread = std::thread(clipboard_monitor_loop);
     } catch (...) {
         running_capture = false;
     }
@@ -375,6 +436,8 @@ int main() {
         let pc = null;
         let screenChannel = null;
         let controlChannel = null;
+        let clipboardChannel = null;
+        let lastViewerClipboard = "";
         const peer_id = "viewer_" + Math.floor(Math.random() * 9000 + 1000);
 
         async function sendSignaling(msg) {
@@ -417,6 +480,17 @@ int main() {
                 };
 
                 controlChannel = pc.createDataChannel('control-stream', { ordered: true });
+                
+                clipboardChannel = pc.createDataChannel('clipboard-stream', { ordered: true });
+                clipboardChannel.onmessage = async (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        if (data.type === 'clipboard' && data.text) {
+                            lastViewerClipboard = data.text;
+                            await navigator.clipboard.writeText(data.text);
+                        }
+                    } catch (e) {}
+                };
 
                 pc.onicecandidate = (event) => {
                     if (event.candidate) {
@@ -465,7 +539,27 @@ int main() {
             } catch (e) {}
         }
 
-        // Attach mouse event listeners to the container wrapper to capture scaling and letterbox bounds accurately
+        function sendClipboard(text) {
+            try {
+                if (clipboardChannel && clipboardChannel.readyState === 'open') {
+                    clipboardChannel.send(JSON.stringify({ type: 'clipboard', text: text }));
+                }
+            } catch (e) {}
+        }
+
+        // Periodic check for browser-side clipboard updates to send to host
+        setInterval(async () => {
+            try {
+                if (document.hasFocus() && navigator.clipboard && navigator.clipboard.readText) {
+                    const text = await navigator.clipboard.readText();
+                    if (text && text !== lastViewerClipboard) {
+                        lastViewerClipboard = text;
+                        sendClipboard(text);
+                    }
+                }
+            } catch (e) {}
+        }, 1000);
+
         wrapper.addEventListener('mousemove', (e) => {
             const rect = imgElement.getBoundingClientRect();
             sendControl({
@@ -608,6 +702,25 @@ int main() {
                                     }
                                 } catch (...) {}
                             });
+                        } else if (dc->label() == "clipboard-stream") {
+                            clipboard_channel = dc;
+                            clipboard_channel->onMessage([](rtc::message_variant message) {
+                                try {
+                                    if (std::holds_alternative<std::string>(message)) {
+                                        auto j = json::parse(std::get<std::string>(message));
+                                        if (j.value("type", "") == "clipboard") {
+                                            std::string text = j.value("text", "");
+                                            if (!text.empty()) {
+                                                {
+                                                    std::lock_guard<std::mutex> lock(host_clipboard_mutex);
+                                                    last_host_clipboard_text = text;
+                                                }
+                                                set_windows_clipboard_text(text);
+                                            }
+                                        }
+                                    }
+                                } catch (...) {}
+                            });
                         }
                     } catch (...) {}
                 });
@@ -706,6 +819,9 @@ int main() {
 
     if (capture_thread.joinable()) {
         try { capture_thread.join(); } catch (...) {}
+    }
+    if (clipboard_thread.joinable()) {
+        try { clipboard_thread.join(); } catch (...) {}
     }
     if (http_thread.joinable()) {
         try { http_thread.join(); } catch (...) {}
