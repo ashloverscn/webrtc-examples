@@ -16,19 +16,11 @@
 #include <nlohmann/json.hpp>
 #include <rtc/rtc.hpp>
 #include <httplib.h>
-
-#ifdef _WIN32
 #include <windows.h>
 #include <objidl.h>
 #include <gdiplus.h>
+
 #pragma comment (lib, "gdiplus.lib")
-#else
-#include <X11/Xlib.h>
-#include <X11/Xutil.h>
-#include <X11/extensions/XTest.h>
-#include <jpeglib.h>
-#include <cstring>
-#endif
 
 using json = nlohmann::json;
 
@@ -91,11 +83,11 @@ ScreenFrame latest_frame;
 bool frame_ready = false;
 std::atomic<bool> running_capture(false);
 
+// Host clipboard state tracking to prevent feedback loops
 std::string last_host_clipboard_text = "";
 std::mutex host_clipboard_mutex;
 
-#ifdef _WIN32
-std::string get_system_clipboard_text() {
+std::string get_windows_clipboard_text() {
     std::string text = "";
     if (!OpenClipboard(NULL)) return text;
     HANDLE hData = GetClipboardData(CF_TEXT);
@@ -110,7 +102,7 @@ std::string get_system_clipboard_text() {
     return text;
 }
 
-void set_system_clipboard_text(const std::string& text) {
+void set_windows_clipboard_text(const std::string& text) {
     if (!OpenClipboard(NULL)) return;
     EmptyClipboard();
     HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, text.size() + 1);
@@ -121,54 +113,13 @@ void set_system_clipboard_text(const std::string& text) {
     }
     CloseClipboard();
 }
-#else
-std::string get_system_clipboard_text() {
-    return "";
-}
-
-void set_system_clipboard_text(const std::string& text) {
-}
-
-bool EncodeImageToJPEG(const uint8_t* rgb_data, int width, int height, int quality, std::vector<uint8_t>& buffer) {
-    struct jpeg_compress_struct cinfo;
-    struct jpeg_error_mgr jerr;
-    cinfo.err = jpeg_std_error(&jerr);
-    jpeg_create_compress(&cinfo);
-
-    unsigned char* outbuffer = nullptr;
-    unsigned long outsize = 0;
-    jpeg_mem_dest(&cinfo, &outbuffer, &outsize);
-
-    cinfo.image_width = width;
-    cinfo.image_height = height;
-    cinfo.input_components = 3;
-    cinfo.in_color_space = JCS_RGB;
-
-    jpeg_set_defaults(&cinfo);
-    jpeg_set_quality(&cinfo, quality, TRUE);
-    jpeg_start_compress(&cinfo, TRUE);
-
-    std::vector<uint8_t> row(width * 3);
-    while (cinfo.next_scanline < cinfo.image_height) {
-        memcpy(row.data(), rgb_data + cinfo.next_scanline * width * 3, width * 3);
-        JSAMPROW row_pointer = row.data();
-        jpeg_write_scanlines(&cinfo, &row_pointer, 1);
-    }
-
-    jpeg_finish_compress(&cinfo);
-    buffer.assign(outbuffer, outbuffer + outsize);
-    jpeg_destroy_compress(&cinfo);
-    if (outbuffer) free(outbuffer);
-    return true;
-}
-#endif
 
 void clipboard_monitor_loop() {
     while (running_capture) {
         std::this_thread::sleep_for(std::chrono::milliseconds(800));
         if (!running_capture) break;
 
-        std::string current_text = get_system_clipboard_text();
+        std::string current_text = get_windows_clipboard_text();
         if (!current_text.empty()) {
             std::lock_guard<std::mutex> lock(host_clipboard_mutex);
             if (current_text != last_host_clipboard_text) {
@@ -186,7 +137,6 @@ void clipboard_monitor_loop() {
     }
 }
 
-#ifdef _WIN32
 int GetEncoderClsid(const WCHAR* format, CLSID* pClsid) {
     if (!format || !pClsid) return -1;
     try {
@@ -256,28 +206,19 @@ bool EncodeBitmapToJPEG(HBITMAP hBitmap, int quality, std::vector<uint8_t>& buff
         return false;
     }
 }
-#endif
 
 void screen_capture_loop() {
-#ifdef _WIN32
     Gdiplus::GdiplusStartupInput gdiplusStartupInput;
     ULONG_PTR gdiplusToken = 0;
     if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, NULL) != Gdiplus::Ok) {
         return;
     }
-#else
-    Display* display = XOpenDisplay(NULL);
-    if (!display) return;
-    int screen = DefaultScreen(display);
-    Window root = RootWindow(display, screen);
-#endif
 
     auto frame_duration = std::chrono::milliseconds(50);
 
     while (running_capture) {
         auto start_time = std::chrono::steady_clock::now();
 
-#ifdef _WIN32
         int screen_w = GetSystemMetrics(SM_CXSCREEN);
         int screen_h = GetSystemMetrics(SM_CYSCREEN);
         if (screen_w <= 0 || screen_h <= 0) {
@@ -291,7 +232,20 @@ void screen_capture_loop() {
             continue;
         }
         HDC hMemoryDC = CreateCompatibleDC(hScreenDC);
+        if (!hMemoryDC) {
+            ReleaseDC(NULL, hScreenDC);
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            continue;
+        }
+
         HBITMAP hBitmap = CreateCompatibleBitmap(hScreenDC, screen_w, screen_h);
+        if (!hBitmap) {
+            DeleteDC(hMemoryDC);
+            ReleaseDC(NULL, hScreenDC);
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            continue;
+        }
+
         HBITMAP hOldBitmap = (HBITMAP)SelectObject(hMemoryDC, hBitmap);
         BOOL blt_ok = BitBlt(hMemoryDC, 0, 0, screen_w, screen_h, hScreenDC, 0, 0, SRCCOPY | CAPTUREBLT);
         SelectObject(hMemoryDC, hOldBitmap);
@@ -305,38 +259,10 @@ void screen_capture_loop() {
                 frame_cv.notify_one();
             }
         }
+
         DeleteObject(hBitmap);
         DeleteDC(hMemoryDC);
         ReleaseDC(NULL, hScreenDC);
-#else
-        XWindowAttributes attr;
-        XGetWindowAttributes(display, root, &attr);
-        int screen_w = attr.width;
-        int screen_h = attr.height;
-
-        XImage* img = XGetImage(display, root, 0, 0, screen_w, screen_h, AllPlanes, ZPixmap);
-        if (img) {
-            std::vector<uint8_t> rgb(screen_w * screen_h * 3);
-            for (int y = 0; y < screen_h; ++y) {
-                for (int x = 0; x < screen_w; ++x) {
-                    unsigned long pixel = XGetPixel(img, x, y);
-                    int idx = (y * screen_w + x) * 3;
-                    rgb[idx + 0] = (pixel & img->red_mask) >> 16;
-                    rgb[idx + 1] = (pixel & img->green_mask) >> 8;
-                    rgb[idx + 2] = (pixel & img->blue_mask);
-                }
-            }
-            XDestroyImage(img);
-
-            std::vector<uint8_t> encoded;
-            if (EncodeImageToJPEG(rgb.data(), screen_w, screen_h, 60, encoded)) {
-                std::lock_guard<std::mutex> lock(frame_mutex);
-                latest_frame = {std::move(encoded), screen_w, screen_h};
-                frame_ready = true;
-                frame_cv.notify_one();
-            }
-        }
-#endif
 
         auto processing_time = std::chrono::steady_clock::now() - start_time;
         if (processing_time < frame_duration) {
@@ -344,13 +270,9 @@ void screen_capture_loop() {
         }
     }
 
-#ifdef _WIN32
     if (gdiplusToken != 0) {
         Gdiplus::GdiplusShutdown(gdiplusToken);
     }
-#else
-    XCloseDisplay(display);
-#endif
 }
 
 void handle_remote_input(const std::string& msg_str) {
@@ -358,23 +280,14 @@ void handle_remote_input(const std::string& msg_str) {
         auto j = json::parse(msg_str);
         std::string type = j.value("type", "");
 
-#ifdef _WIN32
-        int screen_w = GetSystemMetrics(SM_CXSCREEN);
-        int screen_h = GetSystemMetrics(SM_CYSCREEN);
-#else
-        Display* display = XOpenDisplay(NULL);
-        if (!display) return;
-        int screen = DefaultScreen(display);
-        int screen_w = DisplayWidth(display, screen);
-        int screen_h = DisplayHeight(display, screen);
-#endif
-
         if (type == "mousemove") {
             int x = j.value("x", 0);
             int y = j.value("y", 0);
             int vw = j.value("vw", 1);
             int vh = j.value("vh", 1);
             
+            int screen_w = GetSystemMetrics(SM_CXSCREEN);
+            int screen_h = GetSystemMetrics(SM_CYSCREEN);
             if (screen_w <= 0 || screen_h <= 0) return;
 
             double img_aspect = (double)screen_w / screen_h;
@@ -402,27 +315,21 @@ void handle_remote_input(const std::string& msg_str) {
             double norm_x = (render_w > 0) ? (local_x / render_w) : 0;
             double norm_y = (render_h > 0) ? (local_y / render_h) : 0;
 
-            int target_x = (int)(norm_x * screen_w);
-            int target_y = (int)(norm_y * screen_h);
+            double target_x = norm_x * screen_w;
+            double target_y = norm_y * screen_h;
 
-#ifdef _WIN32
-            double abs_x = ((double)target_x / screen_w) * 65535.0;
-            double abs_y = ((double)target_y / screen_h) * 65535.0;
+            double abs_x = (target_x / screen_w) * 65535.0;
+            double abs_y = (target_y / screen_h) * 65535.0;
+
             INPUT input = {0};
             input.type = INPUT_MOUSE;
             input.mi.dx = (LONG)abs_x;
             input.mi.dy = (LONG)abs_y;
             input.mi.dwFlags = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE;
             SendInput(1, &input, sizeof(INPUT));
-#else
-            XTestFakeMotionEvent(display, DefaultScreen(display), target_x, target_y, CurrentTime);
-            XFlush(display);
-            XCloseDisplay(display);
-#endif
         } 
         else if (type == "mousedown" || type == "mouseup") {
             int button = j.value("button", 0);
-#ifdef _WIN32
             DWORD flags = 0;
             if (button == 0) flags = (type == "mousedown") ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP;
             else if (button == 2) flags = (type == "mousedown") ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP;
@@ -434,15 +341,29 @@ void handle_remote_input(const std::string& msg_str) {
                 input.mi.dwFlags = flags;
                 SendInput(1, &input, sizeof(INPUT));
             }
-#else
-            int x11_button = 1;
-            if (button == 1) x11_button = 2;
-            else if (button == 2) x11_button = 3;
+        }
+        else if (type == "wheel") {
+            int delta = j.value("delta", 0);
+            if (delta != 0) {
+                INPUT input = {0};
+                input.type = INPUT_MOUSE;
+                input.mi.dwFlags = INPUT_MOUSE; // fixed flag setting below
+                input.mi.dwFlags = MOUSEEVENTF_WHEEL;
+                input.mi.mouseData = (DWORD)(-delta);
+                SendInput(1, &input, sizeof(INPUT));
+            }
+        }
+        else if (type == "keydown" || type == "keyup") {
+            WORD vk = j.value("keyCode", 0);
+            if (vk == 122) return; // Block F11
 
-            XTestFakeButtonEvent(display, x11_button, (type == "mousedown"), CurrentTime);
-            XFlush(display);
-            XCloseDisplay(display);
-#endif
+            DWORD flags = (type == "keyup") ? KEYEVENTF_KEYUP : 0;
+
+            INPUT input = {0};
+            input.type = INPUT_KEYBOARD;
+            input.ki.wVk = vk;
+            input.ki.dwFlags = flags;
+            SendInput(1, &input, sizeof(INPUT));
         }
     } catch (...) {}
 }
@@ -474,12 +395,35 @@ int main() {
     <title>Remote Desktop Viewer</title>
     <style>
         html, body {
-            margin: 0; padding: 0; width: 100%; height: 100%;
-            background: #000; overflow: hidden; display: flex;
-            justify-content: center; align-items: center;
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background: #000;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
         }
-        .viewer-wrapper { width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; overflow: hidden; }
-        #desktopView { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; cursor: default; user-select: none; }
+        .viewer-wrapper {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
+        }
+        #desktopView {
+            display: block;
+            max-width: 100%;
+            max-height: 100%;
+            width: auto;
+            height: auto;
+            object-fit: contain;
+            cursor: default;
+            user-select: none;
+            -webkit-user-select: none;
+        }
     </style>
 </head>
 <body>
@@ -493,6 +437,7 @@ int main() {
         let screenChannel = null;
         let controlChannel = null;
         let clipboardChannel = null;
+        let lastViewerClipboard = "";
         const peer_id = "viewer_" + Math.floor(Math.random() * 9000 + 1000);
 
         async function sendSignaling(msg) {
@@ -521,17 +466,31 @@ int main() {
         async function initWebRTC() {
             try {
                 pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+
                 screenChannel = pc.createDataChannel('screen-stream', { ordered: false, maxRetransmits: 0 });
                 screenChannel.binaryType = 'arraybuffer';
+
                 screenChannel.onmessage = (event) => {
-                    const blob = new Blob([event.data], { type: 'image/jpeg' });
-                    const url = URL.createObjectURL(blob);
-                    imgElement.src = url;
-                    imgElement.onload = () => URL.revokeObjectURL(url);
+                    try {
+                        const blob = new Blob([event.data], { type: 'image/jpeg' });
+                        const url = URL.createObjectURL(blob);
+                        imgElement.src = url;
+                        imgElement.onload = () => URL.revokeObjectURL(url);
+                    } catch (err) {}
                 };
 
                 controlChannel = pc.createDataChannel('control-stream', { ordered: true });
+                
                 clipboardChannel = pc.createDataChannel('clipboard-stream', { ordered: true });
+                clipboardChannel.onmessage = async (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        if (data.type === 'clipboard' && data.text) {
+                            lastViewerClipboard = data.text;
+                            await navigator.clipboard.writeText(data.text);
+                        }
+                    } catch (e) {}
+                };
 
                 pc.onicecandidate = (event) => {
                     if (event.candidate) {
@@ -545,7 +504,13 @@ int main() {
 
                 const offer = await pc.createOffer();
                 await pc.setLocalDescription(offer);
-                await sendSignaling({ type: 'offer', from: peer_id, data: { sdp: offer.sdp, type: offer.type } });
+
+                await sendSignaling({
+                    type: 'offer',
+                    from: peer_id,
+                    data: { sdp: offer.sdp, type: offer.type }
+                });
+
                 pollSignaling();
             } catch (e) {
                 setTimeout(initWebRTC, 2000);
@@ -574,12 +539,66 @@ int main() {
             } catch (e) {}
         }
 
+        function sendClipboard(text) {
+            try {
+                if (clipboardChannel && clipboardChannel.readyState === 'open') {
+                    clipboardChannel.send(JSON.stringify({ type: 'clipboard', text: text }));
+                }
+            } catch (e) {}
+        }
+
+        // Periodic check for browser-side clipboard updates to send to host
+        setInterval(async () => {
+            try {
+                if (document.hasFocus() && navigator.clipboard && navigator.clipboard.readText) {
+                    const text = await navigator.clipboard.readText();
+                    if (text && text !== lastViewerClipboard) {
+                        lastViewerClipboard = text;
+                        sendClipboard(text);
+                    }
+                }
+            } catch (e) {}
+        }, 1000);
+
         wrapper.addEventListener('mousemove', (e) => {
             const rect = imgElement.getBoundingClientRect();
-            sendControl({ type: 'mousemove', x: e.clientX - rect.left, y: e.clientY - rect.top, vw: rect.width, vh: rect.height });
+            sendControl({
+                type: 'mousemove',
+                x: e.clientX - rect.left,
+                y: e.clientY - rect.top,
+                vw: rect.width,
+                vh: rect.height
+            });
         });
-        wrapper.addEventListener('mousedown', (e) => { e.preventDefault(); sendControl({ type: 'mousedown', button: e.button }); });
-        wrapper.addEventListener('mouseup', (e) => { e.preventDefault(); sendControl({ type: 'mouseup', button: e.button }); });
+
+        wrapper.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            sendControl({ type: 'mousedown', button: e.button });
+        });
+
+        wrapper.addEventListener('mouseup', (e) => {
+            e.preventDefault();
+            sendControl({ type: 'mouseup', button: e.button });
+        });
+
+        wrapper.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+        });
+
+        wrapper.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            sendControl({ type: 'wheel', delta: e.deltaY });
+        }, { passive: false });
+
+        window.addEventListener('keydown', (e) => {
+            if (e.keyCode === 122) return; // F11 toggle fullscreen
+            sendControl({ type: 'keydown', keyCode: e.keyCode });
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (e.keyCode === 122) return;
+            sendControl({ type: 'keyup', keyCode: e.keyCode });
+        });
 
         initWebRTC();
     </script>
@@ -596,66 +615,134 @@ int main() {
             std::string type = payload.value("type", "");
 
             if (type == "offer") {
-                std::lock_guard<std::mutex> lock(connection_mutex);
-                current_session_id++;
-                uint64_t this_session = current_session_id;
+                std::shared_ptr<rtc::PeerConnection> old_pc_to_destroy = nullptr;
+                uint64_t this_session = 0;
 
-                clear_active_session_pointers();
-                pc = std::make_shared<rtc::PeerConnection>(config);
+                {
+                    std::lock_guard<std::mutex> lock(connection_mutex);
+                    current_session_id++;
+                    this_session = current_session_id;
+
+                    if (pc) old_pc_to_destroy = pc;
+                    clear_active_session_pointers();
+                    pc = std::make_shared<rtc::PeerConnection>(config);
+                }
+
+                if (old_pc_to_destroy) {
+                    try { old_pc_to_destroy->close(); } catch(...) {}
+                }
 
                 std::shared_ptr<rtc::PeerConnection> local_pc = pc;
+                if (!local_pc) {
+                    res.status = 500;
+                    res.set_content("{\"status\":\"error\"}", "application/json");
+                    return;
+                }
+
                 local_pc->onLocalDescription([this_session](rtc::Description description) {
-                    std::string sdp_str = std::string(description);
-                    json answer = {
-                        {"type", description.typeString()},
-                        {"from", peer_id},
-                        {"data", {{"sdp", sdp_str}, {"type", description.typeString()}}}
-                    };
-                    std::lock_guard<std::mutex> lock(signaling_mutex);
-                    cpp_to_browser_queue.push(answer);
+                    try {
+                        {
+                            std::lock_guard<std::mutex> lock(connection_mutex);
+                            if (this_session != current_session_id) return;
+                        }
+                        
+                        std::string sdp_str = std::string(description);
+                        json answer = {
+                            {"type", description.typeString()},
+                            {"from", peer_id},
+                            {"data", {{"sdp", sdp_str}, {"type", description.typeString()}}}
+                        };
+                        
+                        std::lock_guard<std::mutex> lock(signaling_mutex);
+                        cpp_to_browser_queue.push(answer);
+                    } catch (...) {}
                 });
 
                 local_pc->onLocalCandidate([this_session](rtc::Candidate candidate) {
-                    std::string cand_str = std::string(candidate);
-                    json ice = {
-                        {"type", "ice"}, {"from", peer_id},
-                        {"data", {{"candidate", cand_str}, {"sdpMid", candidate.mid()}, {"sdpMLineIndex", 0}}}
-                    };
-                    std::lock_guard<std::mutex> lock(signaling_mutex);
-                    cpp_to_browser_queue.push(ice);
+                    try {
+                        {
+                            std::lock_guard<std::mutex> lock(connection_mutex);
+                            if (this_session != current_session_id) return;
+                        }
+                        
+                        std::string cand_str = std::string(candidate);
+                        json ice = {
+                            {"type", "ice"}, {"from", peer_id},
+                            {"data", {{"candidate", cand_str}, {"sdpMid", candidate.mid()}, {"sdpMLineIndex", 0}}}
+                        };
+                        
+                        std::lock_guard<std::mutex> lock(signaling_mutex);
+                        cpp_to_browser_queue.push(ice);
+                    } catch (...) {}
                 });
 
                 local_pc->onDataChannel([this_session](std::shared_ptr<rtc::DataChannel> dc) {
-                    std::lock_guard<std::mutex> dc_lock(connection_mutex);
-                    if (this_session != current_session_id || !dc) return;
+                    try {
+                        std::lock_guard<std::mutex> dc_lock(connection_mutex);
+                        if (this_session != current_session_id || !dc) return;
 
-                    if (dc->label() == "screen-stream") {
-                        screen_channel = dc;
-                        screen_channel->onOpen([this_session]() { streaming_allowed = true; });
-                        screen_channel->onClosed([this_session]() { streaming_allowed = false; });
-                    } else if (dc->label() == "control-stream") {
-                        control_channel = dc;
-                        control_channel->onMessage([](rtc::message_variant message) {
-                            if (std::holds_alternative<std::string>(message)) {
-                                handle_remote_input(std::get<std::string>(message));
-                            }
-                        });
-                    }
+                        if (dc->label() == "screen-stream") {
+                            screen_channel = dc;
+                            screen_channel->onOpen([this_session]() {
+                                std::lock_guard<std::mutex> stream_lock(connection_mutex);
+                                if (this_session != current_session_id) return;
+                                streaming_allowed = true;
+                            });
+                            screen_channel->onClosed([this_session]() { 
+                                std::lock_guard<std::mutex> stream_lock(connection_mutex);
+                                if (this_session != current_session_id) return;
+                                streaming_allowed = false; 
+                            });
+                        } else if (dc->label() == "control-stream") {
+                            control_channel = dc;
+                            control_channel->onMessage([](rtc::message_variant message) {
+                                try {
+                                    if (std::holds_alternative<std::string>(message)) {
+                                        handle_remote_input(std::get<std::string>(message));
+                                    }
+                                } catch (...) {}
+                            });
+                        } else if (dc->label() == "clipboard-stream") {
+                            clipboard_channel = dc;
+                            clipboard_channel->onMessage([](rtc::message_variant message) {
+                                try {
+                                    if (std::holds_alternative<std::string>(message)) {
+                                        auto j = json::parse(std::get<std::string>(message));
+                                        if (j.value("type", "") == "clipboard") {
+                                            std::string text = j.value("text", "");
+                                            if (!text.empty()) {
+                                                {
+                                                    std::lock_guard<std::mutex> lock(host_clipboard_mutex);
+                                                    last_host_clipboard_text = text;
+                                                }
+                                                set_windows_clipboard_text(text);
+                                            }
+                                        }
+                                    }
+                                } catch (...) {}
+                            });
+                        }
+                    } catch (...) {}
                 });
 
                 if (payload.contains("data") && payload["data"].contains("sdp")) {
                     std::string sdp = payload["data"]["sdp"];
                     local_pc->setRemoteDescription(rtc::Description(sdp, "offer"));
                 }
+
             } else if (type == "ice") {
                 std::lock_guard<std::mutex> lock(connection_mutex);
-                if (pc && payload.contains("data")) {
-                    std::string candidate_str = payload["data"]["candidate"];
-                    std::string mid = payload["data"]["sdpMid"];
-                    if (!candidate_str.empty()) {
-                        pc->addRemoteCandidate(rtc::Candidate(candidate_str, mid));
+                if (!pc) return;
+                
+                try {
+                    if (payload.contains("data") && payload["data"].contains("candidate") && payload["data"].contains("sdpMid")) {
+                        std::string candidate_str = payload["data"]["candidate"];
+                        std::string mid = payload["data"]["sdpMid"];
+                        if (!candidate_str.empty()) {
+                            pc->addRemoteCandidate(rtc::Candidate(candidate_str, mid));
+                        }
                     }
-                }
+                } catch (...) {}
             }
         } catch (...) {
             res.status = 400;
@@ -666,50 +753,78 @@ int main() {
     });
 
     http_svr.Get("/poll", [](const httplib::Request&, httplib::Response& res) {
-        json batch = json::array();
-        {
-            std::lock_guard<std::mutex> lock(signaling_mutex);
-            while (!cpp_to_browser_queue.empty()) {
-                batch.push_back(cpp_to_browser_queue.front());
-                cpp_to_browser_queue.pop();
+        try {
+            json batch = json::array();
+            {
+                std::lock_guard<std::mutex> lock(signaling_mutex);
+                while (!cpp_to_browser_queue.empty()) {
+                    batch.push_back(cpp_to_browser_queue.front());
+                    cpp_to_browser_queue.pop();
+                }
             }
+            res.set_content(batch.dump(), "application/json");
+        } catch (...) {
+            res.status = 500;
+            res.set_content("[]", "application/json");
         }
-        res.set_content(batch.dump(), "application/json");
     });
 
-    std::thread http_thread([&http_svr]() {
-        http_svr.listen("0.0.0.0", PORT);
-    });
+    std::thread http_thread;
+    try {
+        http_thread = std::thread([&http_svr]() {
+            http_svr.listen("0.0.0.0", PORT);
+        });
+    } catch (...) {
+        running_capture = false;
+    }
 
     std::cout << "============================================" << std::endl;
-    std::cout << "💻 C++ REMOTE DESKTOP ENGINE ONLINE (LINUX)" << std::endl;
+    std::cout << "💻 C++ REMOTE DESKTOP ENGINE ONLINE" << std::endl;
     std::cout << "LOCAL URL  : http://localhost:" << PORT << "/" << std::endl;
+    std::cout << "PORTMAP URL: http://" << PORTMAP_ENDPOINT << "/" << std::endl;
     std::cout << "============================================" << std::endl;
 
     ScreenFrame current_frame_buffer;
     while (running_capture) {
-        {
-            std::unique_lock<std::mutex> lock(frame_mutex);
-            frame_cv.wait(lock, [] { return frame_ready || !running_capture; });
-            if (!running_capture) break;
-            current_frame_buffer = std::move(latest_frame);
-            frame_ready = false;
-        }
-
-        std::lock_guard<std::mutex> lock(connection_mutex);
-        if (streaming_allowed && screen_channel && screen_channel->isOpen() && !current_frame_buffer.data.empty()) {
-            if (screen_channel->bufferedAmount() <= 2 * 1024 * 1024) {
-                screen_channel->send(reinterpret_cast<const std::byte*>(current_frame_buffer.data.data()), current_frame_buffer.data.size());
+        try {
+            {
+                std::unique_lock<std::mutex> lock(frame_mutex);
+                frame_cv.wait(lock, [] { return frame_ready || !running_capture; });
+                if (!running_capture) break;
+                current_frame_buffer = std::move(latest_frame);
+                frame_ready = false;
             }
-        }
+
+            std::lock_guard<std::mutex> lock(connection_mutex);
+            if (streaming_allowed && screen_channel && screen_channel->isOpen() && !current_frame_buffer.data.empty()) {
+                if (screen_channel->bufferedAmount() <= 2 * 1024 * 1024) {
+                    screen_channel->send(reinterpret_cast<const std::byte*>(current_frame_buffer.data.data()), current_frame_buffer.data.size());
+                }
+            }
+        } catch (...) {}
     }
 
     running_capture = false;
     frame_cv.notify_all();
-    http_svr.stop();
+    
+    {
+        std::lock_guard<std::mutex> lock(connection_mutex);
+        if (pc) { try { pc->close(); } catch(...) {} }
+        clear_active_session_pointers();
+    }
+    
+    try {
+        http_svr.stop();
+    } catch (...) {}
 
-    if (capture_thread.joinable()) capture_thread.join();
-    if (clipboard_thread.joinable()) clipboard_thread.join();
-    if (http_thread.joinable()) http_thread.join();
+    if (capture_thread.joinable()) {
+        try { capture_thread.join(); } catch (...) {}
+    }
+    if (clipboard_thread.joinable()) {
+        try { clipboard_thread.join(); } catch (...) {}
+    }
+    if (http_thread.joinable()) {
+        try { http_thread.join(); } catch (...) {}
+    }
     return 0;
 }
