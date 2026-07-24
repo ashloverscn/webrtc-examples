@@ -10,7 +10,7 @@
 #include <memory>
 #include <random>
 #include <atomic>
-#include <unordered_set>
+#include <queue>
 
 #include <opencv2/opencv.hpp>
 #include <opencv2/core/utils/logger.hpp>
@@ -36,14 +36,11 @@ std::mutex connection_mutex;
 bool streaming_allowed = false;
 std::shared_ptr<rtc::PeerConnection> pc;
 std::shared_ptr<rtc::DataChannel> video_channel;
-std::string viewer_id = "";
-
-// Active WebSocket client sessions
-std::mutex clients_mutex;
-std::unordered_set<std::shared_ptr<rtc::WebSocket>> active_websockets;
-std::shared_ptr<rtc::WebSocket> active_viewer_ws = nullptr;
-
 uint64_t current_session_id = 0;
+
+// Signaling message queues for HTTP polling
+std::mutex signaling_mutex;
+std::queue<json> cpp_to_browser_queue;
 
 std::string generate_peer_id() {
     std::random_device rd;
@@ -56,8 +53,6 @@ std::string peer_id = generate_peer_id();
 
 void clear_active_session_pointers() {
     streaming_allowed = false;
-    viewer_id = "";
-    active_viewer_ws = nullptr;
     if (video_channel) {
         try { video_channel->close(); } catch (...) {}
         video_channel.reset();
@@ -127,185 +122,6 @@ int main() {
     rtc::Configuration config;
     config.iceServers.emplace_back("stun:stun.l.google.com:19302");
 
-    rtc::WebSocketServer::Configuration ws_config;
-    ws_config.port = PORT + 1; // 8890 for signaling WebSocket server
-    auto ws_server = std::make_shared<rtc::WebSocketServer>(ws_config);
-
-    ws_server->onClient([config](std::shared_ptr<rtc::WebSocket> ws) {
-        {
-            std::lock_guard<std::mutex> lock(clients_mutex);
-            active_websockets.insert(ws);
-        }
-
-        ws->onOpen([ws]() {
-            std::string remote_addr = ws->remoteAddress().value_or("unknown");
-            std::cout << "✅ Viewer WebSocket Connected: " << remote_addr << std::endl;
-        });
-
-        ws->onMessage([ws, config](std::variant<rtc::binary, rtc::string> data) {
-            if (!std::holds_alternative<rtc::string>(data)) return;
-            std::string msg_str = std::get<rtc::string>(data);
-
-            std::cout << "\n[SIGNALING IN] -> " << msg_str << "\n" << std::endl;
-
-            try {
-                auto payload = json::parse(msg_str);
-                std::string type = payload.value("type", "");
-
-                if (type == "offer") {
-                    std::shared_ptr<rtc::PeerConnection> old_pc_to_destroy = nullptr;
-                    uint64_t this_session = 0;
-
-                    {
-                        std::lock_guard<std::mutex> lock(connection_mutex);
-                        current_session_id++;
-                        this_session = current_session_id;
-
-                        std::cout << "📥 Offer Received. Staging Session #" << this_session << "..." << std::endl;
-                        if (pc) old_pc_to_destroy = pc;
-                        clear_active_session_pointers();
-
-                        viewer_id = payload.value("from", "viewer");
-                        active_viewer_ws = ws;
-                        pc = std::make_shared<rtc::PeerConnection>(config);
-                    }
-
-                    if (old_pc_to_destroy) {
-                        try { old_pc_to_destroy->close(); } catch(...) {}
-                        old_pc_to_destroy.reset();
-                    }
-
-                    std::shared_ptr<rtc::PeerConnection> local_pc = pc;
-
-                    local_pc->onLocalDescription([ws, this_session](rtc::Description description) {
-                        {
-                            std::lock_guard<std::mutex> lock(connection_mutex);
-                            if (this_session != current_session_id) return;
-                        }
-                        
-                        std::string sdp_str = std::string(description);
-                        std::cout << "\n[WEBRTC HANDSHAKE] Generated Local Description (SDP):\n" << sdp_str << "\n" << std::endl;
-
-                        json answer = {
-                            {"type", description.typeString()},
-                            {"from", peer_id},
-                            {"to", viewer_id},
-                            {"data", {{"sdp", sdp_str}, {"type", description.typeString()}}}
-                        };
-                        
-                        std::string out_msg = answer.dump();
-                        std::cout << "[SIGNALING OUT] <- " << out_msg << "\n" << std::endl;
-                        try { ws->send(out_msg); } catch (...) {}
-                    });
-
-                    local_pc->onLocalCandidate([ws, this_session](rtc::Candidate candidate) {
-                        {
-                            std::lock_guard<std::mutex> lock(connection_mutex);
-                            if (this_session != current_session_id) return;
-                        }
-                        
-                        std::string cand_str = std::string(candidate);
-                        std::cout << "[WEBRTC HANDSHAKE] Generated Local ICE Candidate: " << cand_str << std::endl;
-
-                        json ice = {
-                            {"type", "ice"}, {"from", peer_id}, {"to", viewer_id},
-                            {"data", {{"candidate", cand_str}, {"sdpMid", candidate.mid()}, {"sdpMLineIndex", 0}}}
-                        };
-                        
-                        std::string out_msg = ice.dump();
-                        std::cout << "[SIGNALING OUT] <- " << out_msg << std::endl;
-                        try { ws->send(out_msg); } catch (...) {}
-                    });
-
-                    local_pc->onDataChannel([local_pc, this_session](std::shared_ptr<rtc::DataChannel> dc) {
-                        if (dc->label() == "video-stream") {
-                            std::lock_guard<std::mutex> dc_lock(connection_mutex);
-                            if (this_session != current_session_id) return;
-                            
-                            video_channel = dc;
-                            
-                            video_channel->onOpen([this_session]() {
-                                std::lock_guard<std::mutex> stream_lock(connection_mutex);
-                                if (this_session != current_session_id) return;
-                                std::cout << "🚀 Video Data Channel Connected. Streaming Webcam [Session #" << this_session << "]." << std::endl;
-                                streaming_allowed = true;
-                            });
-                            
-                            video_channel->onClosed([this_session]() { 
-                                std::lock_guard<std::mutex> stream_lock(connection_mutex);
-                                if (this_session != current_session_id) return;
-                                std::cout << "🛑 Video Data Channel Closed [Session #" << this_session << "]." << std::endl;
-                                streaming_allowed = false; 
-                            });
-                        }
-                    });
-
-                    local_pc->onStateChange([this_session, local_pc](rtc::PeerConnection::State state) {
-                        std::cout << "[*] WebRTC State Change: " << static_cast<int>(state) << " [Session #" << this_session << "]" << std::endl;
-                        if (state == rtc::PeerConnection::State::Failed || 
-                            state == rtc::PeerConnection::State::Disconnected || 
-                            state == rtc::PeerConnection::State::Closed) {
-                            
-                            std::thread([this_session, local_pc]() {
-                                std::this_thread::sleep_for(std::chrono::milliseconds(30));
-                                std::lock_guard<std::mutex> state_lock(connection_mutex);
-                                
-                                if (this_session == current_session_id) {
-                                    std::cout << "⚠️ Processing structural drop for active Session #" << this_session << "..." << std::endl;
-                                    clear_active_session_pointers();
-                                    try { local_pc->close(); } catch(...) {}
-                                    std::cout << "✅ Resources cleared. Ready for incoming loops." << std::endl;
-                                }
-                            }).detach();
-                        }
-                    });
-
-                    try {
-                        std::string sdp = payload["data"]["sdp"];
-                        std::cout << "\n[WEBRTC HANDSHAKE] Applying Remote Offer SDP:\n" << sdp << "\n" << std::endl;
-                        local_pc->setRemoteDescription(rtc::Description(sdp, "offer"));
-                    } catch (const std::exception& e) {
-                        std::cerr << "❌ Failed to parse Remote Offer: " << e.what() << std::endl;
-                        std::lock_guard<std::mutex> err_lock(connection_mutex);
-                        if (this_session == current_session_id) {
-                            clear_active_session_pointers();
-                            try { local_pc->close(); } catch(...) {}
-                        }
-                    }
-
-                } else if (type == "ice") {
-                    std::lock_guard<std::mutex> lock(connection_mutex);
-                    if (!pc) return;
-                    
-                    try {
-                        std::string candidate_str = payload["data"]["candidate"];
-                        std::string mid = payload["data"]["sdpMid"];
-                        std::cout << "[WEBRTC HANDSHAKE] Adding Remote ICE Candidate: " << candidate_str << std::endl;
-                        if (!candidate_str.empty()) {
-                            pc->addRemoteCandidate(rtc::Candidate(candidate_str, mid));
-                        }
-                    } catch (const std::exception& e) {
-                        std::cerr << "⚠️ Dropped ICE candidate: " << e.what() << std::endl;
-                    }
-                }
-            } catch (const std::exception& e) {
-                std::cerr << "Signaling Parse Error: " << e.what() << std::endl;
-            }
-        });
-
-        ws->onClosed([ws]() {
-            std::cout << "🔌 Viewer WebSocket Disconnected." << std::endl;
-            std::lock_guard<std::mutex> lock(clients_mutex);
-            active_websockets.erase(ws);
-
-            std::lock_guard<std::mutex> conn_lock(connection_mutex);
-            if (active_viewer_ws == ws) {
-                if (pc) { try { pc->close(); } catch(...) {} }
-                clear_active_session_pointers();
-            }
-        });
-    });
-
     httplib::Server http_svr;
     std::string html_content = R"(<!DOCTYPE html>
 <html>
@@ -319,21 +135,40 @@ int main() {
 </head>
 <body>
     <h2>C++ OpenCV WebRTC Transceiver</h2>
-    <div id="status">Connecting to signaling server via portmap host...</div>
+    <div id="status">Initializing WebRTC PeerConnection...</div>
     <img id="remoteVideo" alt="Awaiting video stream..." />
     <script>
         const statusDiv = document.getElementById('status');
         const imgElement = document.getElementById('remoteVideo');
         
-        const wsPort = 8890;
-        const wsProtocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
-        const wsHost = window.location.hostname;
-        const ws = new WebSocket(wsProtocol + wsHost + ':' + wsPort + '/');
         let pc = null;
         const peer_id = "viewer_" + Math.floor(Math.random() * 9000 + 1000);
 
-        ws.onopen = async () => {
-            statusDiv.innerText = "Connected to Signaling via Portmap Host. Initializing WebRTC PeerConnection...";
+        async function sendSignaling(msg) {
+            await fetch('/signal', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(msg)
+            });
+        }
+
+        async function pollSignaling() {
+            try {
+                let res = await fetch('/poll');
+                if (res.ok) {
+                    let messages = await res.json();
+                    for (let msg of messages) {
+                        handleSignalingMessage(msg);
+                    }
+                }
+            } catch (e) {
+                console.error("Polling error:", e);
+            }
+            setTimeout(pollSignaling, 500);
+        }
+
+        async function initWebRTC() {
+            statusDiv.innerText = "Setting up PeerConnection...";
             pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
 
             const dataChannel = pc.createDataChannel('video-stream', { ordered: false, maxRetransmits: 0 });
@@ -354,11 +189,11 @@ int main() {
             pc.onicecandidate = (event) => {
                 if (event.candidate) {
                     console.log("[Client] Local ICE Candidate:", event.candidate.candidate);
-                    ws.send(JSON.stringify({
+                    sendSignaling({
                         type: 'ice',
                         from: peer_id,
                         data: { candidate: event.candidate.candidate, sdpMid: event.candidate.sdpMid }
-                    }));
+                    });
                 }
             };
 
@@ -366,20 +201,24 @@ int main() {
             console.log("[Client] Created Local Offer SDP:", offer.sdp);
             await pc.setLocalDescription(offer);
 
-            ws.send(JSON.stringify({
+            await sendSignaling({
                 type: 'offer',
                 from: peer_id,
                 data: { sdp: offer.sdp, type: offer.type }
-            }));
-        };
+            });
 
-        ws.onmessage = async (event) => {
-            const msg = JSON.parse(event.data);
+            statusDiv.innerText = "Offer sent. Awaiting Answer...";
+            pollSignaling();
+        }
+
+        async function handleSignalingMessage(msg) {
             console.log("[Client] Signaling Message Received:", msg.type);
             if (msg.type === 'answer') {
-                console.log("[Client] Setting Remote Answer SDP:", msg.data.sdp);
-                await pc.setRemoteDescription(new RTCSessionDescription({ type: msg.data.type, sdp: msg.data.sdp }));
-                statusDiv.innerText = "Streaming Active using Real IP!";
+                if (!pc.remoteDescription || pc.remoteDescription.type === "") {
+                    console.log("[Client] Setting Remote Answer SDP:", msg.data.sdp);
+                    await pc.setRemoteDescription(new RTCSessionDescription({ type: msg.data.type, sdp: msg.data.sdp }));
+                    statusDiv.innerText = "Streaming Active using Real IP!";
+                }
             } else if (msg.type === 'ice') {
                 try {
                     console.log("[Client] Adding Remote ICE Candidate:", msg.data.candidate);
@@ -388,15 +227,165 @@ int main() {
                     console.error('Error adding received ICE candidate', e);
                 }
             }
-        };
+        }
 
-        ws.onclose = () => { statusDiv.innerText = "Disconnected from signaling."; statusDiv.style.color = "#f44336"; };
+        initWebRTC();
     </script>
 </body>
 </html>)";
 
+    // Serve HTML Web UI
     http_svr.Get("/", [html_content](const httplib::Request&, httplib::Response& res) {
         res.set_content(html_content, "text/html");
+    });
+
+    // Handle Incoming Signaling Messages via HTTP POST
+    http_svr.Post("/signal", [config](const httplib::Request& req, httplib::Response& res) {
+        try {
+            auto payload = json::parse(req.body);
+            std::string type = payload.value("type", "");
+
+            if (type == "offer") {
+                std::shared_ptr<rtc::PeerConnection> old_pc_to_destroy = nullptr;
+                uint64_t this_session = 0;
+
+                {
+                    std::lock_guard<std::mutex> lock(connection_mutex);
+                    current_session_id++;
+                    this_session = current_session_id;
+
+                    std::cout << "📥 Offer Received. Staging Session #" << this_session << "..." << std::endl;
+                    if (pc) old_pc_to_destroy = pc;
+                    clear_active_session_pointers();
+
+                    pc = std::make_shared<rtc::PeerConnection>(config);
+                }
+
+                if (old_pc_to_destroy) {
+                    try { old_pc_to_destroy->close(); } catch(...) {}
+                    old_pc_to_destroy.reset();
+                }
+
+                std::shared_ptr<rtc::PeerConnection> local_pc = pc;
+
+                local_pc->onLocalDescription([this_session](rtc::Description description) {
+                    {
+                        std::lock_guard<std::mutex> lock(connection_mutex);
+                        if (this_session != current_session_id) return;
+                    }
+                    
+                    std::string sdp_str = std::string(description);
+                    std::cout << "\n[WEBRTC HANDSHAKE] Generated Local Description (SDP):\n" << sdp_str << "\n" << std::endl;
+
+                    json answer = {
+                        {"type", description.typeString()},
+                        {"from", peer_id},
+                        {"data", {{"sdp", sdp_str}, {"type", description.typeString()}}}
+                    };
+                    
+                    std::lock_guard<std::mutex> lock(signaling_mutex);
+                    cpp_to_browser_queue.push(answer);
+                });
+
+                local_pc->onLocalCandidate([this_session](rtc::Candidate candidate) {
+                    {
+                        std::lock_guard<std::mutex> lock(connection_mutex);
+                        if (this_session != current_session_id) return;
+                    }
+                    
+                    std::string cand_str = std::string(candidate);
+                    std::cout << "[WEBRTC HANDSHAKE] Generated Local ICE Candidate: " << cand_str << std::endl;
+
+                    json ice = {
+                        {"type", "ice"}, {"from", peer_id},
+                        {"data", {{"candidate", cand_str}, {"sdpMid", candidate.mid()}, {"sdpMLineIndex", 0}}}
+                    };
+                    
+                    std::lock_guard<std::mutex> lock(signaling_mutex);
+                    cpp_to_browser_queue.push(ice);
+                });
+
+                local_pc->onDataChannel([local_pc, this_session](std::shared_ptr<rtc::DataChannel> dc) {
+                    if (dc->label() == "video-stream") {
+                        std::lock_guard<std::mutex> dc_lock(connection_mutex);
+                        if (this_session != current_session_id) return;
+                        
+                        video_channel = dc;
+                        
+                        video_channel->onOpen([this_session]() {
+                            std::lock_guard<std::mutex> stream_lock(connection_mutex);
+                            if (this_session != current_session_id) return;
+                            std::cout << "🚀 Video Data Channel Connected. Streaming Webcam [Session #" << this_session << "]." << std::endl;
+                            streaming_allowed = true;
+                        });
+                        
+                        video_channel->onClosed([this_session]() { 
+                            std::lock_guard<std::mutex> stream_lock(connection_mutex);
+                            if (this_session != current_session_id) return;
+                            std::cout << "🛑 Video Data Channel Closed [Session #" << this_session << "]." << std::endl;
+                            streaming_allowed = false; 
+                        });
+                    }
+                });
+
+                local_pc->onStateChange([this_session, local_pc](rtc::PeerConnection::State state) {
+                    std::cout << "[*] WebRTC State Change: " << static_cast<int>(state) << " [Session #" << this_session << "]" << std::endl;
+                    if (state == rtc::PeerConnection::State::Failed || 
+                        state == rtc::PeerConnection::State::Disconnected || 
+                        state == rtc::PeerConnection::State::Closed) {
+                        
+                        std::thread([this_session, local_pc]() {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                            std::lock_guard<std::mutex> state_lock(connection_mutex);
+                            
+                            if (this_session == current_session_id) {
+                                std::cout << "⚠️ Processing structural drop for active Session #" << this_session << "..." << std::endl;
+                                clear_active_session_pointers();
+                                try { local_pc->close(); } catch(...) {}
+                                std::cout << "✅ Resources cleared. Ready for incoming loops." << std::endl;
+                            }
+                        }).detach();
+                    }
+                });
+
+                std::string sdp = payload["data"]["sdp"];
+                std::cout << "\n[WEBRTC HANDSHAKE] Applying Remote Offer SDP:\n" << sdp << "\n" << std::endl;
+                local_pc->setRemoteDescription(rtc::Description(sdp, "offer"));
+
+            } else if (type == "ice") {
+                std::lock_guard<std::mutex> lock(connection_mutex);
+                if (!pc) return;
+                
+                try {
+                    std::string candidate_str = payload["data"]["candidate"];
+                    std::string mid = payload["data"]["sdpMid"];
+                    std::cout << "[WEBRTC HANDSHAKE] Adding Remote ICE Candidate: " << candidate_str << std::endl;
+                    if (!candidate_str.empty()) {
+                        pc->addRemoteCandidate(rtc::Candidate(candidate_str, mid));
+                    }
+                } catch (const std::exception& e) {
+                    std::cerr << "⚠️ Dropped ICE candidate: " << e.what() << std::endl;
+                }
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Signaling Parse Error: " << e.what() << std::endl;
+            res.status = 400;
+            return;
+        }
+        res.set_content("{\"status\":\"ok\"}", "application/json");
+    });
+
+    // Provide Polling Endpoint for Browser Signaling Updates
+    http_svr.Get("/poll", [](const httplib::Request&, httplib::Response& res) {
+        json batch = json::array();
+        {
+            std::lock_guard<std::mutex> lock(signaling_mutex);
+            while (!cpp_to_browser_queue.empty()) {
+                batch.push_back(cpp_to_browser_queue.front());
+                cpp_to_browser_queue.pop();
+            }
+        }
+        res.set_content(batch.dump(), "application/json");
     });
 
     std::thread http_thread([&http_svr]() {
@@ -404,7 +393,7 @@ int main() {
     });
 
     std::cout << "============================================" << std::endl;
-    std::cout << "🎥 WEBCAM TRANSCEIVER ONLINE" << std::endl;
+    std::cout << "🎥 WEBCAM TRANSCEIVER ONLINE (SINGLE-PORT)" << std::endl;
     std::cout << "LOCAL URL  : http://localhost:" << PORT << "/" << std::endl;
     std::cout << "PORTMAP URL: http://" << PORTMAP_ENDPOINT << "/" << std::endl;
     std::cout << "DEVICE ID  : " << peer_id << std::endl;
@@ -441,7 +430,6 @@ int main() {
     }
     
     http_svr.stop();
-    ws_server.reset();
     if (capture_thread.joinable()) capture_thread.join();
     if (http_thread.joinable()) http_thread.join();
     return 0;
