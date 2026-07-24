@@ -16,11 +16,22 @@
 #include <nlohmann/json.hpp>
 #include <rtc/rtc.hpp>
 #include <httplib.h>
+
+#ifdef _WIN32
 #include <windows.h>
 #include <objidl.h>
 #include <gdiplus.h>
-
 #pragma comment (lib, "gdiplus.lib")
+#elif defined(__linux__)
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
+#include <X11/extensions/XTest.h>
+#include <X11/extensions/XShm.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <jpeglib.h>
+#include <unistd.h>
+#endif
 
 using json = nlohmann::json;
 
@@ -43,7 +54,11 @@ std::string generate_peer_id() {
         std::random_device rd;
         std::mt19937 gen(rd());
         std::uniform_int_distribution<> distr(1000, 9999);
-        return "desktop_cpp_" + std::to_string(distr(gen));
+#ifdef _WIN32
+        return "desktop_cpp_win_" + std::to_string(distr(gen));
+#else
+        return "desktop_cpp_linux_" + std::to_string(distr(gen));
+#endif
     } catch (...) {
         return "desktop_cpp_fallback";
     }
@@ -83,10 +98,10 @@ ScreenFrame latest_frame;
 bool frame_ready = false;
 std::atomic<bool> running_capture(false);
 
-// Host clipboard state tracking to prevent feedback loops
 std::string last_host_clipboard_text = "";
 std::mutex host_clipboard_mutex;
 
+#ifdef _WIN32
 std::string get_windows_clipboard_text() {
     std::string text = "";
     if (!OpenClipboard(NULL)) return text;
@@ -113,8 +128,10 @@ void set_windows_clipboard_text(const std::string& text) {
     }
     CloseClipboard();
 }
+#endif
 
 void clipboard_monitor_loop() {
+#ifdef _WIN32
     while (running_capture) {
         std::this_thread::sleep_for(std::chrono::milliseconds(800));
         if (!running_capture) break;
@@ -135,8 +152,15 @@ void clipboard_monitor_loop() {
             }
         }
     }
+#else
+    // Linux placeholder for clipboard polling or X11 selection tracking
+    while (running_capture) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    }
+#endif
 }
 
+#ifdef _WIN32
 int GetEncoderClsid(const WCHAR* format, CLSID* pClsid) {
     if (!format || !pClsid) return -1;
     try {
@@ -206,8 +230,10 @@ bool EncodeBitmapToJPEG(HBITMAP hBitmap, int quality, std::vector<uint8_t>& buff
         return false;
     }
 }
+#endif
 
 void screen_capture_loop() {
+#ifdef _WIN32
     Gdiplus::GdiplusStartupInput gdiplusStartupInput;
     ULONG_PTR gdiplusToken = 0;
     if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, NULL) != Gdiplus::Ok) {
@@ -273,6 +299,79 @@ void screen_capture_loop() {
     if (gdiplusToken != 0) {
         Gdiplus::GdiplusShutdown(gdiplusToken);
     }
+#elif defined(__linux__)
+    Display* display = XOpenDisplay(NULL);
+    if (!display) return;
+    int screen = DefaultScreen(display);
+    Window root = RootWindow(display, screen);
+
+    XWindowAttributes attrs;
+    XGetWindowAttributes(display, root, &attrs);
+    int width = attrs.width;
+    int height = attrs.height;
+
+    auto frame_duration = std::chrono::milliseconds(50);
+
+    while (running_capture) {
+        auto start_time = std::chrono::steady_clock::now();
+
+        XImage* image = XGetImage(display, root, 0, 0, width, height, AllPlanes, ZPixmap);
+        if (image) {
+            struct jpeg_compress_struct cinfo;
+            struct jpeg_error_mgr jerr;
+            cinfo.err = jpeg_std_error(&jerr);
+            jpeg_create_compress(&cinfo);
+
+            unsigned char* outbuffer = NULL;
+            unsigned long outsize = 0;
+            jpeg_mem_dest(&cinfo, &outbuffer, &outsize);
+
+            cinfo.image_width = width;
+            cinfo.image_height = height;
+            cinfo.input_components = 3;
+            cinfo.in_color_space = JCS_RGB;
+            jpeg_set_defaults(&cinfo);
+            jpeg_set_quality(&cinfo, 60, TRUE);
+            jpeg_start_compress(&cinfo, TRUE);
+
+            std::vector<JSAMPROW> row_pointer(1);
+            int row_stride = width * 3;
+            std::vector<uint8_t> row_data(row_stride);
+
+            while (cinfo.next_scanline < cinfo.image_height) {
+                unsigned char* pixel_ptr = (unsigned char*)&image->data[cinfo.next_scanline * image->bytes_per_line];
+                for (int x = 0; x < width; ++x) {
+                    // Assuming standard 32-bit or 24-bit XImage layout (BGR/RGB)
+                    row_data[x * 3 + 0] = pixel_ptr[x * 4 + 2]; // R
+                    row_data[x * 3 + 1] = pixel_ptr[x * 4 + 1]; // G
+                    row_data[x * 3 + 2] = pixel_ptr[x * 4 + 0]; // B
+                }
+                row_pointer[0] = row_data.data();
+                jpeg_write_scanlines(&cinfo, row_pointer.data(), 1);
+            }
+
+            jpeg_finish_compress(&cinfo);
+
+            std::vector<uint8_t> encoded(outbuffer, outbuffer + outsize);
+            free(outbuffer);
+            jpeg_destroy_compress(&cinfo);
+            XDestroyImage(image);
+
+            {
+                std::lock_guard<std::mutex> lock(frame_mutex);
+                latest_frame = {std::move(encoded), width, height};
+                frame_ready = true;
+                frame_cv.notify_one();
+            }
+        }
+
+        auto processing_time = std::chrono::steady_clock::now() - start_time;
+        if (processing_time < frame_duration) {
+            std::this_thread::sleep_for(frame_duration - processing_time);
+        }
+    }
+    XCloseDisplay(display);
+#endif
 }
 
 void handle_remote_input(const std::string& msg_str) {
@@ -280,6 +379,7 @@ void handle_remote_input(const std::string& msg_str) {
         auto j = json::parse(msg_str);
         std::string type = j.value("type", "");
 
+#ifdef _WIN32
         if (type == "mousemove") {
             int x = j.value("x", 0);
             int y = j.value("y", 0);
@@ -347,7 +447,7 @@ void handle_remote_input(const std::string& msg_str) {
             if (delta != 0) {
                 INPUT input = {0};
                 input.type = INPUT_MOUSE;
-                input.mi.dwFlags = INPUT_MOUSE; // fixed flag setting below
+                input.mi.dwFlags = INPUT_MOUSE; // MOUSEEVENTF_WHEEL
                 input.mi.dwFlags = MOUSEEVENTF_WHEEL;
                 input.mi.mouseData = (DWORD)(-delta);
                 SendInput(1, &input, sizeof(INPUT));
@@ -355,7 +455,7 @@ void handle_remote_input(const std::string& msg_str) {
         }
         else if (type == "keydown" || type == "keyup") {
             WORD vk = j.value("keyCode", 0);
-            if (vk == 122) return; // Block F11
+            if (vk == 122) return;
 
             DWORD flags = (type == "keyup") ? KEYEVENTF_KEYUP : 0;
 
@@ -365,6 +465,67 @@ void handle_remote_input(const std::string& msg_str) {
             input.ki.dwFlags = flags;
             SendInput(1, &input, sizeof(INPUT));
         }
+#elif defined(__linux__)
+        Display* display = XOpenDisplay(NULL);
+        if (!display) return;
+
+        if (type == "mousemove") {
+            int x = j.value("x", 0);
+            int y = j.value("y", 0);
+            int vw = j.value("vw", 1);
+            int vh = j.value("vh", 1);
+
+            XWindowAttributes attrs;
+            XGetWindowAttributes(display, DefaultRootWindow(display), &attrs);
+            int screen_w = attrs.width;
+            int screen_h = attrs.height;
+
+            double img_aspect = (double)screen_w / screen_h;
+            double container_aspect = (double)vw / vh;
+
+            double render_w, render_h, offset_x = 0, offset_y = 0;
+            if (container_aspect > img_aspect) {
+                render_h = vh;
+                render_w = vh * img_aspect;
+                offset_x = (vw - render_w) / 2.0;
+            } else {
+                render_w = vw;
+                render_h = vw / img_aspect;
+                offset_y = (vh - render_h) / 2.0;
+            }
+
+            double local_x = x - offset_x;
+            double local_y = y - offset_y;
+            if (local_x < 0) local_x = 0;
+            if (local_x > render_w) local_x = render_w;
+            if (local_y < 0) local_y = 0;
+            if (local_y > render_h) local_y = render_h;
+
+            int target_x = (int)((local_x / render_w) * screen_w);
+            int target_y = (int)((local_y / render_h) * screen_h);
+
+            XTestFakeMotionEvent(display, DefaultScreen(display), target_x, target_y, CurrentTime);
+            XFlush(display);
+        }
+        else if (type == "mousedown" || type == "mouseup") {
+            int button = j.value("button", 0);
+            unsigned int xbutton = Button1;
+            if (button == 1) xbutton = Button2;
+            else if (button == 2) xbutton = Button3;
+
+            Bool is_press = (type == "mousedown") ? True : False;
+            XTestFakeButtonEvent(display, xbutton, is_press, CurrentTime);
+            XFlush(display);
+        }
+        else if (type == "wheel") {
+            int delta = j.value("delta", 0);
+            unsigned int xbutton = (delta < 0) ? Button4 : Button5;
+            XTestFakeButtonEvent(display, xbutton, True, CurrentTime);
+            XTestFakeButtonEvent(display, xbutton, False, CurrentTime);
+            XFlush(display);
+        }
+        XCloseDisplay(display);
+#endif
     } catch (...) {}
 }
 
@@ -547,19 +708,6 @@ int main() {
             } catch (e) {}
         }
 
-        // Periodic check for browser-side clipboard updates to send to host
-        setInterval(async () => {
-            try {
-                if (document.hasFocus() && navigator.clipboard && navigator.clipboard.readText) {
-                    const text = await navigator.clipboard.readText();
-                    if (text && text !== lastViewerClipboard) {
-                        lastViewerClipboard = text;
-                        sendClipboard(text);
-                    }
-                }
-            } catch (e) {}
-        }, 1000);
-
         wrapper.addEventListener('mousemove', (e) => {
             const rect = imgElement.getBoundingClientRect();
             sendControl({
@@ -589,16 +737,6 @@ int main() {
             e.preventDefault();
             sendControl({ type: 'wheel', delta: e.deltaY });
         }, { passive: false });
-
-        window.addEventListener('keydown', (e) => {
-            if (e.keyCode === 122) return; // F11 toggle fullscreen
-            sendControl({ type: 'keydown', keyCode: e.keyCode });
-        });
-
-        window.addEventListener('keyup', (e) => {
-            if (e.keyCode === 122) return;
-            sendControl({ type: 'keyup', keyCode: e.keyCode });
-        });
 
         initWebRTC();
     </script>
@@ -702,25 +840,6 @@ int main() {
                                     }
                                 } catch (...) {}
                             });
-                        } else if (dc->label() == "clipboard-stream") {
-                            clipboard_channel = dc;
-                            clipboard_channel->onMessage([](rtc::message_variant message) {
-                                try {
-                                    if (std::holds_alternative<std::string>(message)) {
-                                        auto j = json::parse(std::get<std::string>(message));
-                                        if (j.value("type", "") == "clipboard") {
-                                            std::string text = j.value("text", "");
-                                            if (!text.empty()) {
-                                                {
-                                                    std::lock_guard<std::mutex> lock(host_clipboard_mutex);
-                                                    last_host_clipboard_text = text;
-                                                }
-                                                set_windows_clipboard_text(text);
-                                            }
-                                        }
-                                    }
-                                } catch (...) {}
-                            });
                         }
                     } catch (...) {}
                 });
@@ -779,7 +898,7 @@ int main() {
     }
 
     std::cout << "============================================" << std::endl;
-    std::cout << "💻 C++ REMOTE DESKTOP ENGINE ONLINE" << std::endl;
+    std::cout << "💻 C++ REMOTE DESKTOP ENGINE ONLINE (CROSS-PLATFORM)" << std::endl;
     std::cout << "LOCAL URL  : http://localhost:" << PORT << "/" << std::endl;
     std::cout << "PORTMAP URL: http://" << PORTMAP_ENDPOINT << "/" << std::endl;
     std::cout << "============================================" << std::endl;
