@@ -82,8 +82,9 @@ void opencv_video_loop() {
     
     auto frame_duration = std::chrono::milliseconds(33);
     cv::Mat frame;
-    std::vector<uint8_t> jpeg_buffer;
-    std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, 75};
+
+    std::vector<uint8_t> encoded_buffer;
+    std::vector<int> compression_params = {cv::IMWRITE_JPEG_QUALITY, 75};
 
     while (running_capture) {
         auto start_time = std::chrono::steady_clock::now();
@@ -98,13 +99,14 @@ void opencv_video_loop() {
             cv::resize(frame, frame, cv::Size(WIDTH, HEIGHT));
         }
 
-        cv::imencode(".jpg", frame, jpeg_buffer, params);
-
+        cv::imencode(".jpg", frame, encoded_buffer, compression_params);
+        
         {
             std::lock_guard<std::mutex> lock(frame_mutex);
-            latest_frame_bytes = std::move(jpeg_buffer);
+            latest_frame_bytes = std::move(encoded_buffer);
             frame_ready = true;
         }
+
         frame_cv.notify_one();
         
         auto processing_time = std::chrono::steady_clock::now() - start_time;
@@ -117,7 +119,7 @@ void opencv_video_loop() {
 
 int main() {
     cv::utils::logging::setLogLevel(cv::utils::logging::LOG_LEVEL_SILENT);
-    rtc::InitLogger(rtc::LogLevel::Warning);
+    rtc::InitLogger(rtc::LogLevel::Info);
 
     running_capture = true;
     std::thread capture_thread(opencv_video_loop);
@@ -125,10 +127,8 @@ int main() {
     rtc::Configuration config;
     config.iceServers.emplace_back("stun:stun.l.google.com:19302");
 
-    // Initialize libdatachannel WebSocketServer for Signaling on port 8890 (internal ws pipe)
-    // To achieve single-port external tunneling via portmap, ws routes separately
     rtc::WebSocketServer::Configuration ws_config;
-    ws_config.port = PORT + 1; // 8890 internally for WebRTC signaling websocket
+    ws_config.port = PORT + 1; // 8890 for signaling WebSocket server
     auto ws_server = std::make_shared<rtc::WebSocketServer>(ws_config);
 
     ws_server->onClient([config](std::shared_ptr<rtc::WebSocket> ws) {
@@ -145,6 +145,8 @@ int main() {
         ws->onMessage([ws, config](std::variant<rtc::binary, rtc::string> data) {
             if (!std::holds_alternative<rtc::string>(data)) return;
             std::string msg_str = std::get<rtc::string>(data);
+
+            std::cout << "\n[SIGNALING IN] -> " << msg_str << "\n" << std::endl;
 
             try {
                 auto payload = json::parse(msg_str);
@@ -180,13 +182,20 @@ int main() {
                             std::lock_guard<std::mutex> lock(connection_mutex);
                             if (this_session != current_session_id) return;
                         }
+                        
+                        std::string sdp_str = std::string(description);
+                        std::cout << "\n[WEBRTC HANDSHAKE] Generated Local Description (SDP):\n" << sdp_str << "\n" << std::endl;
+
                         json answer = {
                             {"type", description.typeString()},
                             {"from", peer_id},
                             {"to", viewer_id},
-                            {"data", {{"sdp", std::string(description)}, {"type", description.typeString()}}}
+                            {"data", {{"sdp", sdp_str}, {"type", description.typeString()}}}
                         };
-                        try { ws->send(answer.dump()); } catch (...) {}
+                        
+                        std::string out_msg = answer.dump();
+                        std::cout << "[SIGNALING OUT] <- " << out_msg << "\n" << std::endl;
+                        try { ws->send(out_msg); } catch (...) {}
                     });
 
                     local_pc->onLocalCandidate([ws, this_session](rtc::Candidate candidate) {
@@ -194,28 +203,35 @@ int main() {
                             std::lock_guard<std::mutex> lock(connection_mutex);
                             if (this_session != current_session_id) return;
                         }
+                        
+                        std::string cand_str = std::string(candidate);
+                        std::cout << "[WEBRTC HANDSHAKE] Generated Local ICE Candidate: " << cand_str << std::endl;
+
                         json ice = {
                             {"type", "ice"}, {"from", peer_id}, {"to", viewer_id},
-                            {"data", {{"candidate", std::string(candidate)}, {"sdpMid", candidate.mid()}, {"sdpMLineIndex", 0}}}
+                            {"data", {{"candidate", cand_str}, {"sdpMid", candidate.mid()}, {"sdpMLineIndex", 0}}}
                         };
-                        try { ws->send(ice.dump()); } catch (...) {}
+                        
+                        std::string out_msg = ice.dump();
+                        std::cout << "[SIGNALING OUT] <- " << out_msg << std::endl;
+                        try { ws->send(out_msg); } catch (...) {}
                     });
 
-                    local_pc->onDataChannel([&, this_session](std::shared_ptr<rtc::DataChannel> dc) {
+                    local_pc->onDataChannel([local_pc, this_session](std::shared_ptr<rtc::DataChannel> dc) {
                         if (dc->label() == "video-stream") {
                             std::lock_guard<std::mutex> dc_lock(connection_mutex);
                             if (this_session != current_session_id) return;
                             
                             video_channel = dc;
                             
-                            video_channel->onOpen([&, this_session]() {
+                            video_channel->onOpen([this_session]() {
                                 std::lock_guard<std::mutex> stream_lock(connection_mutex);
                                 if (this_session != current_session_id) return;
                                 std::cout << "🚀 Video Data Channel Connected. Streaming Webcam [Session #" << this_session << "]." << std::endl;
                                 streaming_allowed = true;
                             });
                             
-                            video_channel->onClosed([&, this_session]() { 
+                            video_channel->onClosed([this_session]() { 
                                 std::lock_guard<std::mutex> stream_lock(connection_mutex);
                                 if (this_session != current_session_id) return;
                                 std::cout << "🛑 Video Data Channel Closed [Session #" << this_session << "]." << std::endl;
@@ -224,13 +240,13 @@ int main() {
                         }
                     });
 
-                    local_pc->onStateChange([&, this_session, local_pc](rtc::PeerConnection::State state) {
+                    local_pc->onStateChange([this_session, local_pc](rtc::PeerConnection::State state) {
                         std::cout << "[*] WebRTC State Change: " << static_cast<int>(state) << " [Session #" << this_session << "]" << std::endl;
                         if (state == rtc::PeerConnection::State::Failed || 
                             state == rtc::PeerConnection::State::Disconnected || 
                             state == rtc::PeerConnection::State::Closed) {
                             
-                            std::thread([&, this_session, local_pc]() {
+                            std::thread([this_session, local_pc]() {
                                 std::this_thread::sleep_for(std::chrono::milliseconds(30));
                                 std::lock_guard<std::mutex> state_lock(connection_mutex);
                                 
@@ -246,6 +262,7 @@ int main() {
 
                     try {
                         std::string sdp = payload["data"]["sdp"];
+                        std::cout << "\n[WEBRTC HANDSHAKE] Applying Remote Offer SDP:\n" << sdp << "\n" << std::endl;
                         local_pc->setRemoteDescription(rtc::Description(sdp, "offer"));
                     } catch (const std::exception& e) {
                         std::cerr << "❌ Failed to parse Remote Offer: " << e.what() << std::endl;
@@ -263,6 +280,7 @@ int main() {
                     try {
                         std::string candidate_str = payload["data"]["candidate"];
                         std::string mid = payload["data"]["sdpMid"];
+                        std::cout << "[WEBRTC HANDSHAKE] Adding Remote ICE Candidate: " << candidate_str << std::endl;
                         if (!candidate_str.empty()) {
                             pc->addRemoteCandidate(rtc::Candidate(candidate_str, mid));
                         }
@@ -288,7 +306,6 @@ int main() {
         });
     });
 
-    // Initialize cpp-httplib Server for HTTP web pages on port 8889
     httplib::Server http_svr;
     std::string html_content = R"(<!DOCTYPE html>
 <html>
@@ -302,28 +319,28 @@ int main() {
 </head>
 <body>
     <h2>C++ OpenCV WebRTC Transceiver</h2>
-    <div id="status">Connecting to signaling server...</div>
+    <div id="status">Connecting to signaling server via portmap host...</div>
     <img id="remoteVideo" alt="Awaiting video stream..." />
     <script>
         const statusDiv = document.getElementById('status');
         const imgElement = document.getElementById('remoteVideo');
         
-        // Automatically maps WebSocket port to HTTP port + 1 (8890) or relative matching
         const wsPort = 8890;
         const wsProtocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
-        const ws = new WebSocket(wsProtocol + window.location.hostname + ':' + wsPort + '/');
+        const wsHost = window.location.hostname;
+        const ws = new WebSocket(wsProtocol + wsHost + ':' + wsPort + '/');
         let pc = null;
         const peer_id = "viewer_" + Math.floor(Math.random() * 9000 + 1000);
 
         ws.onopen = async () => {
-            statusDiv.innerText = "Connected to Signaling. Initializing WebRTC PeerConnection...";
+            statusDiv.innerText = "Connected to Signaling via Portmap Host. Initializing WebRTC PeerConnection...";
             pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
 
             const dataChannel = pc.createDataChannel('video-stream', { ordered: false, maxRetransmits: 0 });
             dataChannel.binaryType = 'arraybuffer';
 
             dataChannel.onopen = () => {
-                statusDiv.innerText = "Data Channel Open. Receiving Video Stream...";
+                statusDiv.innerText = "Data Channel Open. Receiving Real IP Video Stream...";
                 statusDiv.style.color = "#4caf50";
             };
 
@@ -336,6 +353,7 @@ int main() {
 
             pc.onicecandidate = (event) => {
                 if (event.candidate) {
+                    console.log("[Client] Local ICE Candidate:", event.candidate.candidate);
                     ws.send(JSON.stringify({
                         type: 'ice',
                         from: peer_id,
@@ -345,6 +363,7 @@ int main() {
             };
 
             const offer = await pc.createOffer();
+            console.log("[Client] Created Local Offer SDP:", offer.sdp);
             await pc.setLocalDescription(offer);
 
             ws.send(JSON.stringify({
@@ -356,11 +375,14 @@ int main() {
 
         ws.onmessage = async (event) => {
             const msg = JSON.parse(event.data);
+            console.log("[Client] Signaling Message Received:", msg.type);
             if (msg.type === 'answer') {
+                console.log("[Client] Setting Remote Answer SDP:", msg.data.sdp);
                 await pc.setRemoteDescription(new RTCSessionDescription({ type: msg.data.type, sdp: msg.data.sdp }));
-                statusDiv.innerText = "Streaming Active!";
+                statusDiv.innerText = "Streaming Active using Real IP!";
             } else if (msg.type === 'ice') {
                 try {
+                    console.log("[Client] Adding Remote ICE Candidate:", msg.data.candidate);
                     await pc.addIceCandidate(new RTCIceCandidate({ candidate: msg.data.candidate, sdpMid: msg.data.sdpMid }));
                 } catch (e) {
                     console.error('Error adding received ICE candidate', e);
