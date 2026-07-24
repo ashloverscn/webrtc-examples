@@ -11,8 +11,13 @@ set(VCPKG_CRT_LINKAGE dynamic)
 # Required dependencies for WebRTC Data Channel handling and JSON metadata parsing
 find_package(nlohmann_json REQUIRED)
 find_package(LibDataChannel CONFIG REQUIRED)
-find_package(X11 REQUIRED)
 find_package(Threads REQUIRED)
+
+# Linux-only dependencies
+if(UNIX AND NOT APPLE)
+    find_package(X11 REQUIRED)
+    find_package(JPEG REQUIRED)
+endif()
 
 # Optional: Keep cpp-httplib if you still need a fallback HTTP server for initial web page delivery
 include(FetchContent)
@@ -29,13 +34,19 @@ target_link_libraries(remote-desktop-http PRIVATE
     nlohmann_json::nlohmann_json
     LibDataChannel::LibDataChannel
     httplib::httplib
-    ${X11_LIBRARIES}
-    Xtst
-    jpeg
     Threads::Threads
 )
 
-# Windows-specific system libraries
+# Linux-specific libraries linking
+if(UNIX AND NOT APPLE)
+    target_link_libraries(remote-desktop-http PRIVATE 
+        ${X11_LIBRARIES}
+        Xtst
+        JPEG::JPEG
+    )
+endif()
+
+# Windows-specific system libraries linking
 if(WIN32)
     target_link_libraries(remote-desktop-http PRIVATE 
         ws2_32 
