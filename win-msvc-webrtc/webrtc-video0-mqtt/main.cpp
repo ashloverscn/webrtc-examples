@@ -10,6 +10,7 @@
 #include <memory>
 #include <random>
 #include <atomic>
+#include <cstddef> // Required for std::byte
 
 #include <opencv2/opencv.hpp>
 #include <opencv2/core/utils/logger.hpp>
@@ -49,7 +50,7 @@ std::string generate_peer_id() {
 
 std::string peer_id = generate_peer_id();
 
-// Clean up current references safely (Expects connection_mutex lock to be managed safely)
+// Clean up current references safely
 void clear_active_session_pointers() {
     streaming_allowed = false;
     viewer_id = "";
@@ -64,7 +65,6 @@ void clear_active_session_pointers() {
 
 // --- OpenCV Webcam Loop (Adaptive Platform Backend Selection) ---
 void opencv_video_loop() {
-    // Determine native capture API backend based on host platform
 #if defined(_WIN32) || defined(_WIN64)
     int api_preference = cv::CAP_DSHOW;
     const char* os_name = "Windows (DirectShow)";
@@ -232,7 +232,7 @@ int main() {
                 });
 
                 local_pc->onStateChange([&, this_session, local_pc](rtc::PeerConnection::State state) {
-                    std::cout << "[*] WebRTC State Change: " << state << " [Session #" << this_session << "]" << std::endl;
+                    std::cout << "[*] WebRTC State Change: " << static_cast<int>(state) << " [Session #" << this_session << "]" << std::endl;
                     if (state == rtc::PeerConnection::State::Failed || 
                         state == rtc::PeerConnection::State::Disconnected || 
                         state == rtc::PeerConnection::State::Closed) {
@@ -344,6 +344,7 @@ int main() {
                 }
 
                 if (streaming_allowed) {
+                    // Explicitly cast to std::byte* for compatibility across compilers
                     video_channel->send(reinterpret_cast<const std::byte*>(frame_buffer.data()), frame_buffer.size());
                 }
             } catch (...) {
