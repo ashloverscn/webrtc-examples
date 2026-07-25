@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(webrtc-video0-mqtt-rtsp CXX)
+project(webrtc-video0-http CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -28,11 +28,11 @@ find_library(AVFORMAT_LIB avformat)
 find_library(AVCODEC_LIB avcodec)
 find_library(AVUTIL_LIB avutil)
 
-add_executable(webrtc-video0-mqtt-rtsp main.cpp)
+add_executable(webrtc-video0-http main.cpp)
 
-target_include_directories(webrtc-video0-mqtt-rtsp PRIVATE ${FFMPEG_INCLUDE_DIR})
+target_include_directories(webrtc-video0-http PRIVATE ${FFMPEG_INCLUDE_DIR})
 
-target_link_libraries(webrtc-video0-mqtt-rtsp PRIVATE 
+target_link_libraries(webrtc-video0-http PRIVATE 
     opencv_core 
     opencv_videoio 
     opencv_imgproc
@@ -42,6 +42,6 @@ target_link_libraries(webrtc-video0-mqtt-rtsp PRIVATE
     ${AVFORMAT_LIB}
     ${AVCODEC_LIB}
     ${AVUTIL_LIB}
-    ws2_32
-    crypt32
+    $<$<BOOL:${WIN32}>:ws2_32>
+    $<$<BOOL:${WIN32}>:crypt32>
 )
