@@ -17,7 +17,7 @@
     <video id="remoteVideo" autoplay playsinline></video>
 
     <script>
-        const config = { host: "i11b0026.ala.eu-central-1.emqxsl.com", port: 8884, topic: "webrtc/signaling" };
+        const config = { host: "i11b0026.ala.eu-central-1.emqxsl.com", port: 8084, topic: "webrtc/signaling" };
         const myId = "viewer_" + Math.random().toString(16).slice(2, 8);
         let camId = null, pc = null, mqtt = new Paho.MQTT.Client(config.host, config.port, myId);
 
