@@ -132,7 +132,7 @@ class RemoteCameraSource:
         self.mqtt_client.on_message = self.on_mqtt_message
         try:
             logger.info("Connecting to HiveMQ Cloud...")
-            self.mqtt_client.connect("e5122a5328ea4986a0295fa6e037655a.s2.eu.hivemq.cloud", 8883, 60)
+            self.mqtt_client.connect("i11b0026.ala.eu-central-1.emqxsl.com", 8883, 60)
             
             threading.Thread(target=self.mqtt_client.loop_forever, daemon=True).start()
             threading.Thread(target=self.presence_loop, daemon=True).start()
